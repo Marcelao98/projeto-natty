@@ -1,0 +1,21 @@
+discord.py>=2.4.0
+PyNaCl>=1.5.0
+davey>=0.1.6
+yt-dlp>=2024.12.13
+gspread>=6.1.0
+google-auth>=2.30.0
+python-dotenv>=1.0.0
+
+# Módulo Echo (voz -> texto). Opcional: só precisa se ativar modules.echo.cog.
+openai-whisper>=20231117
+# discord-ext-voice-recv só publica pré-releases no PyPI (0.5.2a179 no momento);
+# >=0.5.0 sem mais nada faz o pip ignorar pré-release e falhar. Ele não decifra
+# o DAVE sozinho: modules/echo/dave.py remenda isso (ver lá).
+discord-ext-voice-recv>=0.5.2a179
+# Detecção da senha em streaming. O modelo de português é baixado à mão pra
+# modules/echo/assets/ (não commitado; ver modules/echo/README.md).
+vosk>=0.3.45
+# Escriba (ata da sessão, transcrita no fim): mesmos pesos do Whisper, backend
+# CTranslate2, mais rápido e leve de RAM. Traz ctranslate2 e onnxruntime (o
+# vad_filter usa). Recebe o áudio como array (ver _ler_wav_como_array no Echo).
+faster-whisper>=1.2.1

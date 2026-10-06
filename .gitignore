@@ -1,0 +1,36 @@
+.env
+credentials.json
+*.json
+__pycache__/
+*.pyc
+.venv/
+venv/
+logs/
+
+# Dataset e vocabulário do Bardo são versionados, apesar do *.json acima
+!modules/bardo/dataset/*.json
+
+# Repositórios de terceiros clonados pro Sieve analisar (têm .env e .git próprios)
+modules/sieve/Findings/repo-analyses/*/repo/
+
+# Configurações locais do Claude Code
+**/.claude/settings.local.json
+
+# Staging do pipeline do Bardo (bardo_extrair_playlist.py)
+staging/
+
+# Modelo de voz do Vosk (Echo): 31MB em muitos arquivos, baixado à mão
+# (ver modules/echo/README.md)
+modules/echo/assets/vosk-model-*/
+
+# Escriba: áudio (.wav por pessoa) e ata (.txt) de cada sessão — a conversa da
+# mesa, nunca vai pro repositório (já coberto por logs/, aqui explícito)
+logs/sessoes/
+
+# Banco do NAT-CORE (tem Discord IDs): o arquivo, os auxiliares do WAL e os
+# backups. Só os arquivos do banco: data/ também tem tracklists versionadas.
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.db-journal
+data/backups/

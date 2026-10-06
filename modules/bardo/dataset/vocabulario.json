@@ -1,0 +1,113 @@
+{
+  "_comentario": "Vocabulário de busca do Bardo. Cada categoria é algo que alguém numa mesa de fato pediria. 'palavras': o que as pessoas digitam e que leva à categoria (sinônimos). 'temas': temas crus do musicas.json que também colocam a faixa na categoria, mas que sozinhos são específicos demais pra puxar a categoria inteira (quem pede 'coral' quer coral, não tudo que é épico). Toda palavra também conta como tema. Depois de mexer aqui, rodar: python scripts/categorizar_musicas.py",
+  "categorias": {
+    "triste": {
+      "palavras": ["triste", "tristeza", "melancolico", "melancolia", "tragico", "tragedia", "luto", "lamento", "despedida", "desespero", "solitario", "solidao", "choro", "chorar", "perda", "funeral", "saudade", "culpa", "drama pesado"],
+      "temas": ["vazio", "consolo", "morte"]
+    },
+    "calmo": {
+      "palavras": ["calmo", "calma", "tranquilo", "tranquila", "sereno", "relaxante", "relaxar", "paz", "pacifico", "suave", "leve", "contemplativo", "introspectivo"],
+      "temas": ["acolhedor", "descanso", "ninar", "cotidiano", "ambiente", "atmosferico"]
+    },
+    "tenso": {
+      "palavras": ["tenso", "tensao", "suspense", "ansioso", "ansiedade", "nervoso", "urgente", "perseguicao", "fuga", "furtivo", "furtividade", "ameacador", "claustrofobico", "opressivo"],
+      "temas": ["suspeita", "pressagio", "caotico"]
+    },
+    "combate": {
+      "palavras": ["combate", "luta", "lutar", "batalha", "briga", "confronto", "emboscada", "guerra", "invasao", "militar", "violento", "frenetico", "intenso", "estrategia"],
+      "temas": ["boss fight", "duelo", "dinamico", "estrategia", "marcha", "caotico", "caos", "planejamento"]
+    },
+    "chefe": {
+      "palavras": ["chefe", "chefao", "boss", "boss fight", "chefe final", "duelo"],
+      "temas": ["dificil", "dragao"]
+    },
+    "epico": {
+      "palavras": ["epico", "grandioso", "imponente", "heroico", "heroi", "glorioso", "triunfante", "grandiosidade", "determinacao"],
+      "temas": ["coral", "orquestral", "cavaleiresco", "motivador", "decisivo", "confiante", "destino", "climax", "iconico"]
+    },
+    "emocionante": {
+      "palavras": ["emocionante", "empolgante", "animador", "adrenalina"],
+      "temas": ["intenso", "climax", "determinacao"]
+    },
+    "sombrio": {
+      "palavras": ["sombrio", "escuro", "sinistro", "macabro", "gotico", "maldicao", "amaldicoado", "decadente", "apocaliptico", "infernal", "inferno", "destruicao", "odio"],
+      "temas": ["sereno-macabro", "abandonado", "noturno", "morte"]
+    },
+    "terror": {
+      "palavras": ["terror", "horror", "assustador", "medo", "pesadelo", "perturbador", "grotesco", "insano", "loucura", "cosmico", "horror cosmico", "psicologico", "arrepiante"],
+      "temas": ["silencio perturbador", "sereno-macabro"]
+    },
+    "misterio": {
+      "palavras": ["misterio", "misterioso", "enigma", "enigmatico", "investigacao", "investigar", "intriga", "conspiracao", "segredo", "reviravolta", "suspeita", "pressagio"],
+      "temas": ["astuto", "pressagio"]
+    },
+    "magico": {
+      "palavras": ["magico", "magia", "arcano", "mistico", "bruxa", "bruxaria", "ritual", "ritualistico", "feitico", "encantado", "etereo", "onirico", "sonho", "fantasia"],
+      "temas": ["transcendental", "maldicao"]
+    },
+    "sagrado": {
+      "palavras": ["sagrado", "igreja", "templo", "religioso", "divino", "celestial", "santo", "solene", "orgao"],
+      "temas": ["transcendental", "coral"]
+    },
+    "alegre": {
+      "palavras": ["alegre", "alegria", "feliz", "animado", "otimista", "festivo", "festa", "divertido", "verao", "infantil"],
+      "temas": ["leve"]
+    },
+    "esperancoso": {
+      "palavras": ["esperancoso", "esperanca", "inspirador", "motivador", "despertar", "reconfortante"],
+      "temas": ["consolo", "otimista"]
+    },
+    "engracado": {
+      "palavras": ["engracado", "comico", "comedia", "bobo", "excentrico", "zombeteiro", "palhaco"],
+      "temas": ["teatral"]
+    },
+    "dramatico": {
+      "palavras": ["dramatico", "drama", "drama pesado", "choque", "teatral"],
+      "temas": ["reviravolta", "emocionante", "existencial", "filosofico"]
+    },
+    "romantico": {
+      "palavras": ["romantico", "romance", "amor", "sedutor", "valsa"],
+      "temas": ["baile"]
+    },
+    "nostalgico": {
+      "palavras": ["nostalgico", "nostalgia", "lembranca", "memoria", "caixinha de musica"],
+      "temas": ["saudade"]
+    },
+    "nobreza": {
+      "palavras": ["nobreza", "nobre", "realeza", "corte", "rei", "rainha", "principe", "princesa", "palacio", "castelo", "elegante", "baile"],
+      "temas": ["valsa", "classico"]
+    },
+    "cidade": {
+      "palavras": ["cidade", "vila", "vilarejo", "taverna", "estalagem", "mercado", "feira", "multidao", "hub", "cotidiano", "escola"],
+      "temas": ["acolhedor"]
+    },
+    "exploracao": {
+      "palavras": ["exploracao", "explorar", "viagem", "jornada", "aventura", "estrada", "caminho"],
+      "temas": ["natureza", "selvagem", "mar", "exotico"]
+    },
+    "natureza": {
+      "palavras": ["natureza", "floresta", "mata", "selvagem", "mar", "oceano", "praia", "chuva", "frio", "neve", "gelo", "lua", "vulcao", "vulcanico"],
+      "temas": ["verao"]
+    },
+    "masmorra": {
+      "palavras": ["masmorra", "dungeon", "caverna", "subterraneo", "ruinas", "catacumba", "cripta", "tumba", "esgoto", "claustrofobico"],
+      "temas": ["abandonado", "antigo"]
+    },
+    "descanso": {
+      "palavras": ["descanso", "descansar", "acampamento", "fogueira", "repouso", "dormir", "ninar", "refugio", "acolhedor"],
+      "temas": ["hub", "relaxante"]
+    },
+    "vilao": {
+      "palavras": ["vilao", "antagonista", "ameacador", "maligno", "malvado", "raiva", "odio"],
+      "temas": ["zombeteiro", "imponente"]
+    },
+    "final": {
+      "palavras": ["final", "climax", "desfecho", "encerramento", "conclusao", "decisivo"],
+      "temas": ["destino", "despedida"]
+    },
+    "abertura": {
+      "palavras": ["abertura", "tema principal", "introducao", "menu"],
+      "temas": ["iconico"]
+    }
+  }
+}
