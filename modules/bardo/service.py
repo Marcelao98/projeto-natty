@@ -13,6 +13,7 @@ futuro módulo de LLM) poder chamar direto.
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import random
@@ -24,7 +25,7 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
-from modules.bardo import youtube
+from modules.bardo import storage, youtube
 # Os erros do YouTube, já com o motivo pra mesa (vídeo privado, idade...).
 from modules.bardo.youtube import (  # noqa: F401 (reexportados pro cog)
     BloqueadoNaRegiao,
@@ -116,7 +117,8 @@ class Pedido:
     """O que pediram pra Natty fazer com a música.
 
     acao: "tocar", "pausar", "continuar", "parar", "volume", "pular", "fila",
-        "limpar_fila", "repetir" ou "remover".
+        "limpar_fila", "repetir", "remover" ou "tocar_playlist" (busca = nome
+        da playlist salva).
     link: só em "tocar"; None se pediram pra tocar sem mandar link. Pode ser
         de vídeo ou de playlist (eh_link_de_playlist).
     busca: só em "tocar" sem link; o que vem depois do verbo ("triste e
@@ -175,6 +177,9 @@ def interpretar_pedido(texto: str) -> Pedido | None:
         desligar = _DESLIGAR_REPETIR_RE.search(sem_link)
         alvo = "fila" if _REPETIR_FILA_RE.search(sem_link) else None
         return Pedido("repetir", repetir=False if desligar else None, alvo=alvo)
+    salva = _TOCAR_PLAYLIST_RE.search(sem_link)
+    if salva:
+        return Pedido("tocar_playlist", busca=salva.group("nome").strip(" \t\n,.!?:;") or None)
     # Título com cara de comando ("toca Volta pra Casa", "toca Próxima
     # Parada"): quando o verbo de tocar vem antes de tudo, é busca.
     busca = _busca_quando_tocar_vem_primeiro(sem_link)
@@ -238,6 +243,13 @@ def _busca_quando_tocar_vem_primeiro(texto: str) -> str | None:
     if _RESTO_QUE_E_COMANDO_RE.match(resto):
         return None
     return resto
+
+
+# "natty toca a playlist Taverna": playlist SALVA (não link). "natty qual a
+# playlist?" continua sendo ver a fila.
+_TOCAR_PLAYLIST_RE = re.compile(
+    r"\b(toca|toque|tocar|bota|coloca|põe|poe|play)\s+(a\s+)?playlist\s+(?P<nome>\S.*)$", re.IGNORECASE
+)
 
 
 _PARA_DE_RE = re.compile(r"^\s+de\s+(\w+)", re.IGNORECASE)
@@ -594,12 +606,19 @@ def buscar_por_tags(
 
 
 def buscar_musicas(
-    texto_busca: str, dataset: list[dict] | None = None, vocabulario: Vocabulario | None = None
+    texto_busca: str,
+    dataset: list[dict] | None = None,
+    vocabulario: Vocabulario | None = None,
+    guild_id: int | None = None,
 ) -> tuple[list[Musica], int]:
     """buscar_por_tags() já no formato da fila, sorteando até MAX_RESULTADOS_DA_BUSCA.
 
+    Com `guild_id` (e sem `dataset`), busca no musicas.json global MAIS as
+    descobertas em mesa daquele servidor (dataset_do_servidor).
     Devolve (músicas escolhidas, quantas bateram no total).
     """
+    if dataset is None and guild_id is not None:
+        dataset = dataset_do_servidor(guild_id)
     resultados = buscar_por_tags(texto_busca, dataset, vocabulario)
     if len(resultados) > MAX_RESULTADOS_DA_BUSCA:
         escolhidas = random.sample(resultados, MAX_RESULTADOS_DA_BUSCA)
@@ -920,3 +939,149 @@ def video_id(link: str) -> str:
     """Id do vídeo de um link do YouTube (watch?v=, youtu.be/); o próprio texto se não achar."""
     m = re.search(r"(?:[?&]v=|youtu\.be/)([\w-]+)", link)
     return m.group(1) if m else link
+
+
+# ---------------------------------------------------------------------------
+# Dataset por servidor: o musicas.json global (só leitura em produção) mais as
+# descobertas em mesa de cada servidor, no bardo.db. A "era essa?" grava aqui.
+# ---------------------------------------------------------------------------
+
+
+def dataset_do_servidor(guild_id: int) -> list[dict]:
+    """O dataset global com as descobertas do servidor por cima."""
+    return carregar_dataset() + storage.listar_descobertas(guild_id)
+
+
+def adicionar_descoberta(guild_id: int, titulo: str, link: str, temas: list[str]) -> dict:
+    """Grava uma música descoberta em mesa NA CAMADA DO SERVIDOR e devolve a entrada.
+
+    Mesmo formato do musicas.json (dá pra promover pro global à mão).
+    MusicaJaNoDataset se o vídeo já está no global ou nas descobertas do servidor.
+    """
+    video = video_id(link)
+    for m in dataset_do_servidor(guild_id):
+        if video_id(m["link"]) == video:
+            raise MusicaJaNoDataset(m)
+    temas = temas or [NAO_CLASSIFICADO]
+    entrada = {
+        "id": f"{slug(ORIGEM_DESCOBERTA['nome'])}-{slug(titulo) or video.lower()}",
+        "nome": titulo,
+        "link": f"https://www.youtube.com/watch?v={video}",
+        "escopo": "faixa_individual",
+        "origem": dict(ORIGEM_DESCOBERTA),
+        "temas": temas,
+        "categorias": categorias_dos_temas(temas),
+        "comentario_pessoal": "",
+    }
+    storage.inserir_descoberta(guild_id, video, entrada)
+    return entrada
+
+
+# ---------------------------------------------------------------------------
+# Playlists e cenas salvas por servidor (bardo.db)
+# ---------------------------------------------------------------------------
+
+MAX_NOME = 60
+CARGO_MESTRE_PADRAO = "Condutor"
+
+
+class ErroDeColecao(Exception):
+    """Pedido de playlist/cena/som que não dá pra atender; a mensagem já é pra mesa."""
+
+
+def cargo_mestre() -> str:
+    """Nome do cargo que controla o Bardo pelo painel e apaga coisa salva (BARDO_CARGO_MESTRE)."""
+    return os.getenv("BARDO_CARGO_MESTRE") or CARGO_MESTRE_PADRAO
+
+
+def eh_mestre(nomes_dos_cargos: list[str]) -> bool:
+    """Tem o cargo de mestre (Condutor, por padrão)? Comparação sem acento nem maiúscula."""
+    alvo = _normalizar(cargo_mestre())
+    return any(_normalizar(c) == alvo for c in nomes_dos_cargos)
+
+
+def _nome_valido(nome: str, o_que: str) -> tuple[str, str]:
+    """(nome limpo, chave) ou ErroDeColecao."""
+    nome = " ".join((nome or "").split())
+    if not nome:
+        raise ErroDeColecao(f"Dá um nome pra {o_que}.")
+    if len(nome) > MAX_NOME:
+        raise ErroDeColecao(f"Nome grande demais (máximo {MAX_NOME} letras).")
+    chave = slug(nome)
+    if not chave:
+        raise ErroDeColecao("Usa pelo menos uma letra ou número no nome.")
+    return nome, chave
+
+
+def _sugestao(chave: str, existentes: list[dict]) -> str:
+    parecidos = difflib.get_close_matches(chave, [e["nome_chave"] for e in existentes], n=1, cutoff=0.6)
+    if not parecidos:
+        return ""
+    nome = next(e["nome"] for e in existentes if e["nome_chave"] == parecidos[0])
+    return f" Você quis dizer **{nome}**?"
+
+
+def salvar_playlist(guild_id: int, nome: str, musicas: list[Musica], autor_id: int | None = None,
+                    substituir: bool = False) -> tuple[str, int]:
+    """Salva `musicas` como playlist do servidor. Devolve (nome, quantas).
+
+    Com o mesmo nome de uma que existe, só com `substituir`.
+    """
+    nome, chave = _nome_valido(nome, "a playlist")
+    if not musicas:
+        raise ErroDeColecao("Não tem nada na fila pra salvar.")
+    if not substituir and storage.buscar_playlist(guild_id, chave) is not None:
+        raise ErroDeColecao(f"Já existe uma playlist **{nome}**. Usa outro nome ou manda substituir.")
+    itens = [{"titulo": m.titulo, "link": m.link, "duracao": m.duracao_segundos} for m in musicas]
+    storage.salvar_playlist(guild_id, nome, chave, itens, None if autor_id is None else str(autor_id))
+    return nome, len(itens)
+
+
+def carregar_playlist(guild_id: int, nome: str) -> tuple[str, list[Musica]]:
+    """(nome, músicas) da playlist salva; ErroDeColecao com sugestão se não existir."""
+    nome, chave = _nome_valido(nome, "a playlist")
+    playlist = storage.buscar_playlist(guild_id, chave)
+    if playlist is None:
+        raise ErroDeColecao(f"Não tem playlist **{nome}**.{_sugestao(chave, storage.listar_playlists(guild_id))}")
+    return playlist["nome"], [Musica(i["titulo"], i["link"], i["duracao"]) for i in playlist["itens"]]
+
+
+def listar_playlists(guild_id: int) -> list[dict]:
+    """[{"nome", "quantas", "criado_por", ...}] do servidor, por nome."""
+    return storage.listar_playlists(guild_id)
+
+
+def apagar_playlist(guild_id: int, nome: str, autor_id: int | None = None, mestre: bool = False) -> str:
+    """Apaga a playlist. Só quem criou ou um mestre. Devolve o nome apagado."""
+    nome, chave = _nome_valido(nome, "a playlist")
+    playlist = storage.buscar_playlist(guild_id, chave)
+    if playlist is None:
+        raise ErroDeColecao(f"Não tem playlist **{nome}**.")
+    if not mestre and playlist["criado_por"] != (None if autor_id is None else str(autor_id)):
+        raise ErroDeColecao(f"Só quem criou a **{playlist['nome']}** ou quem tem o cargo {cargo_mestre()} apaga.")
+    storage.apagar_playlist(guild_id, chave)
+    return playlist["nome"]
+
+
+def salvar_cena(guild_id: int, nome: str, dados: dict, autor_id: int | None = None) -> str:
+    """Salva (ou atualiza) uma cena: o estado do mixer (música, ambientes, pads, ducking, master)."""
+    nome, chave = _nome_valido(nome, "a cena")
+    storage.salvar_cena(guild_id, nome, chave, dados, None if autor_id is None else str(autor_id))
+    return nome
+
+
+def carregar_cena(guild_id: int, nome: str) -> tuple[str, dict]:
+    nome, chave = _nome_valido(nome, "a cena")
+    cena = storage.buscar_cena(guild_id, chave)
+    if cena is None:
+        raise ErroDeColecao(f"Não tem cena **{nome}**.{_sugestao(chave, storage.listar_cenas(guild_id))}")
+    return cena["nome"], cena["dados"]
+
+
+def listar_cenas(guild_id: int) -> list[dict]:
+    return storage.listar_cenas(guild_id)
+
+
+def apagar_cena(guild_id: int, nome: str) -> bool:
+    nome, chave = _nome_valido(nome, "a cena")
+    return storage.apagar_cena(guild_id, chave)

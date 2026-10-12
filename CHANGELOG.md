@@ -1,5 +1,13 @@
 # Changelog
 
+## Bardo, etapa 3: banco próprio, playlists e cenas por servidor - 2026-10-12
+
+- `data/bardo.db` (fora do git) com `storage.py` como único lugar que fala SQL: playlists, sons, cenas e descobertas, tudo por servidor.
+- `/playlist salvar|tocar|listar|ver|apagar` e `@Natty toca a playlist <nome>`; apagar só quem criou ou o cargo **Condutor** (`BARDO_CARGO_MESTRE`).
+- Descobertas do "era essa?" vão pra camada do servidor; a busca vê o `musicas.json` global + as do servidor.
+- Cenas já gravam/carregam (usadas pelo mixer nas próximas etapas).
+- Testes: Bardo 162.
+
 ## Bardo, etapa 2: outras fontes - 2026-10-12
 
 - Qualquer link que o yt-dlp entende (SoundCloud, Bandcamp, link direto...); set do SoundCloud e álbum do Bandcamp entram como playlist; `LinkNaoSuportado` pra site desconhecido.

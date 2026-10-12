@@ -72,6 +72,35 @@ aceita mensagens da própria Natty com esse marcador como se fossem menção.
   longo: a URL do YouTube expira.
 - Spotify não dá (DRM). Freesound precisaria de chave de API, fica de fora.
 
+## Banco do Bardo: playlists, cenas e descobertas por servidor (desde 12/10/2026)
+
+O Bardo tem banco próprio, `data/bardo.db` (`BARDO_DB_PATH`), fora do git
+como o do core. `storage.py` é o único lugar que fala SQL; o schema é
+criado sozinho no primeiro uso (`PRAGMA user_version`). Tabelas, todas por
+servidor: `playlists` + `playlist_itens`, `sons` e `cenas` (usadas pelo
+mixer), `descobertas`.
+
+**Playlists salvas** (`/playlist ...`):
+
+| Comando | O que faz |
+|---|---|
+| `/playlist salvar nome:<x> [substituir]` | salva a fila atual (a que toca + as próximas) |
+| `/playlist tocar nome:<x>` ou `@Natty toca a playlist <x>` | põe na fila |
+| `/playlist listar` · `/playlist ver nome:<x>` | lista / mostra as músicas |
+| `/playlist apagar nome:<x>` | só quem criou ou quem tem o cargo de mestre |
+
+Nome sem diferença de acento/maiúscula; nome errado vem com sugestão.
+
+**Cargo de mestre**: `Condutor` (ou `BARDO_CARGO_MESTRE` no `.env`). O
+dono do servidor sempre conta como mestre. Vale pra apagar coisa salva e
+pro painel web.
+
+**Dataset por servidor**: o `musicas.json` continua sendo a base global
+(versionada). As descobertas do "era essa?" agora vão pra tabela
+`descobertas` **do servidor** (mesmo formato de faixa do musicas.json, dá
+pra promover pro global à mão), e a busca de cada servidor enxerga base +
+as dele. `adicionar_descoberta_ao_dataset` (grava no JSON) ficou pros scripts.
+
 ## Playlist do YouTube (desde 12/10/2026)
 
 Link de playlist (`youtube.com/playlist?list=...`) põe a playlist inteira

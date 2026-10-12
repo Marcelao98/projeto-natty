@@ -75,6 +75,13 @@ def _logar_falha(texto: str, alvo: str, erro: Exception) -> None:
         log.error("Bardo: %s %s", texto, alvo, exc_info=erro)
 
 
+def _eh_mestre(membro) -> bool:
+    """Tem o cargo de mestre do Bardo (Condutor, por padrão)? Dono do servidor sempre é."""
+    if getattr(getattr(membro, "guild", None), "owner_id", None) == membro.id:
+        return True
+    return service.eh_mestre([c.name for c in getattr(membro, "roles", [])])
+
+
 def _deve_ignorar(message: discord.Message, eu: discord.abc.User | None) -> bool:
     """Ignora bots (a própria Natty, o Avrae...), exceto o pedido falado que a Natty posta."""
     if not message.author.bot:
@@ -132,6 +139,9 @@ class BardoCog(commands.Cog):
                     "Me manda o link do YouTube, ou descreve o que quer ouvir "
                     '(ex: "@Natty toca triste e bloodborne").'
                 )
+        elif pedido.acao == "tocar_playlist":
+            async with message.channel.typing():
+                resposta = await self._tocar_playlist_salva(guild, message.author, message.channel, pedido.busca)
         elif pedido.acao == "pular":
             resposta = self._pular(guild)
         elif pedido.acao == "fila":
@@ -222,6 +232,67 @@ class BardoCog(commands.Cog):
     async def repetir(self, interaction: discord.Interaction, modo: app_commands.Choice[str] | None = None):
         await interaction.response.send_message(self._repetir(interaction.guild, _pedido_de_repetir(modo)))
 
+    playlist = app_commands.Group(name="playlist", description="Playlists salvas do servidor", guild_only=True)
+
+    @playlist.command(name="salvar", description="Salva a fila atual (a que toca + as próximas) como playlist")
+    @app_commands.describe(nome="Nome da playlist", substituir="Se já existir uma com esse nome, troca por esta")
+    async def playlist_salvar(self, interaction: discord.Interaction, nome: str, substituir: bool = False):
+        fila = self._fila(interaction.guild)
+        musicas = [m for m in (fila.tocando, *fila.proximas) if m is not None]
+        try:
+            nome, quantas = await asyncio.to_thread(
+                service.salvar_playlist, interaction.guild.id, nome, musicas, interaction.user.id, substituir
+            )
+        except service.ErroDeColecao as e:
+            await interaction.response.send_message(str(e), ephemeral=True)
+            return
+        await interaction.response.send_message(f"💾 Salvei a playlist **{escape_markdown(nome)}** ({quantas} músicas).")
+        self._notificar(interaction.guild.id)
+
+    @playlist.command(name="tocar", description="Põe uma playlist salva na fila")
+    @app_commands.describe(nome="Nome da playlist (veja em /playlist listar)")
+    async def playlist_tocar(self, interaction: discord.Interaction, nome: str):
+        await interaction.response.defer(thinking=True)
+        resposta = await self._tocar_playlist_salva(interaction.guild, interaction.user, interaction.channel, nome)
+        await interaction.followup.send(resposta)
+
+    @playlist.command(name="listar", description="Lista as playlists salvas do servidor")
+    async def playlist_listar(self, interaction: discord.Interaction):
+        playlists = await asyncio.to_thread(service.listar_playlists, interaction.guild.id)
+        if not playlists:
+            texto = "Nenhuma playlist salva ainda. Monta a fila e usa `/playlist salvar`."
+        else:
+            texto = "📃 Playlists:\n" + "\n".join(
+                f"• **{escape_markdown(p['nome'])}** ({p['quantas']} músicas)" for p in playlists
+            )
+        await interaction.response.send_message(texto)
+
+    @playlist.command(name="ver", description="Mostra as músicas de uma playlist salva")
+    async def playlist_ver(self, interaction: discord.Interaction, nome: str):
+        try:
+            nome, musicas = await asyncio.to_thread(service.carregar_playlist, interaction.guild.id, nome)
+        except service.ErroDeColecao as e:
+            await interaction.response.send_message(str(e), ephemeral=True)
+            return
+        linhas = [f"📃 **{escape_markdown(nome)}** ({len(musicas)} músicas):"]
+        linhas += [f"{i}. {escape_markdown(m.titulo)}{_duracao(m)}" for i, m in enumerate(musicas[:20], start=1)]
+        if len(musicas) > 20:
+            linhas.append(f"… e mais {len(musicas) - 20}")
+        await interaction.response.send_message("\n".join(linhas))
+
+    @playlist.command(name="apagar", description="Apaga uma playlist salva (quem criou ou o cargo de mestre)")
+    async def playlist_apagar(self, interaction: discord.Interaction, nome: str):
+        mestre = _eh_mestre(interaction.user)
+        try:
+            nome = await asyncio.to_thread(
+                service.apagar_playlist, interaction.guild.id, nome, interaction.user.id, mestre
+            )
+        except service.ErroDeColecao as e:
+            await interaction.response.send_message(str(e), ephemeral=True)
+            return
+        await interaction.response.send_message(f"🗑️ Apaguei a playlist **{escape_markdown(nome)}**.")
+        self._notificar(interaction.guild.id)
+
     @app_commands.command(name="pausar", description="Pausa a música")
     @app_commands.guild_only()
     async def pausar(self, interaction: discord.Interaction):
@@ -311,7 +382,7 @@ class BardoCog(commands.Cog):
         if not voice_state or not voice_state.channel:
             return "Entra num canal de voz primeiro, aí eu toco."
 
-        musicas, achadas = service.buscar_musicas(busca)
+        musicas, achadas = service.buscar_musicas(busca, guild_id=guild.id)
         if not musicas:
             # Depois do dataset, a pasta de músicas local; só então o YouTube.
             musicas = service.buscar_arquivos_locais(busca)
@@ -321,6 +392,20 @@ class BardoCog(commands.Cog):
 
         aviso = f" (achei {achadas}, sorteei {len(musicas)})" if achadas > len(musicas) else ""
         return await self._enfileirar(guild, voice_state.channel, canal_de_texto, musicas, aviso)
+
+    async def _tocar_playlist_salva(
+        self, guild: discord.Guild, membro: discord.Member, canal_de_texto: discord.abc.Messageable, nome: str | None
+    ) -> str:
+        """Põe uma playlist salva do servidor (/playlist salvar) na fila."""
+        voice_state = membro.voice
+        if not voice_state or not voice_state.channel:
+            return "Entra num canal de voz primeiro, aí eu toco."
+        try:
+            nome, musicas = await asyncio.to_thread(service.carregar_playlist, guild.id, nome or "")
+        except service.ErroDeColecao as e:
+            return str(e)
+        resposta = await self._enfileirar(guild, voice_state.channel, canal_de_texto, musicas)
+        return f"📃 Playlist **{escape_markdown(nome)}**: {resposta}"
 
     async def _tocar_playlist(
         self, guild: discord.Guild, canal: discord.VoiceChannel, canal_de_texto: discord.abc.Messageable, link: str
@@ -412,7 +497,7 @@ class BardoCog(commands.Cog):
 
         try:
             entrada = await asyncio.to_thread(
-                service.adicionar_descoberta_ao_dataset, pendencia["titulo"], pendencia["link"], temas
+                service.adicionar_descoberta, message.guild.id, pendencia["titulo"], pendencia["link"], temas
             )
         except service.MusicaJaNoDataset as e:
             await message.reply(
@@ -677,6 +762,9 @@ class BardoCog(commands.Cog):
 
     def _volume(self, guild: discord.Guild) -> int:
         return self._volumes.get(guild.id, service.VOLUME_PADRAO)
+
+    def _notificar(self, guild_id: int) -> None:
+        """Avisa quem acompanha o estado do Bardo (o painel) que algo mudou. Ganha corpo na etapa do painel."""
 
     def _fila(self, guild: discord.Guild) -> service.Fila:
         return self._filas.setdefault(guild.id, service.Fila())
