@@ -7,7 +7,8 @@ from dotenv import load_dotenv
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-MODULOS_ATIVOS = ["modules.core.cog", "modules.bardo.cog", "modules.dice.cog", "modules.socorro.cog", "modules.echo.cog"]
+MODULOS_ATIVOS = ["modules.core.cog", "modules.bardo.cog", "modules.dice.cog", "modules.socorro.cog", "modules.echo.cog",
+                  "modules.painel.cog"]
 
 
 class Natty(commands.Bot):

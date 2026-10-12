@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Natty · Painel</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topo">
+    <h1>Natty <span class="sub">· painel do Bardo</span></h1>
+    <div id="usuario" class="usuario" hidden>
+      <img id="avatar" alt="" width="28" height="28">
+      <span id="nome"></span>
+      <button id="sair" class="discreto" type="button">sair</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="tela-login" class="cartao centro" hidden>
+      <p>Entra com a sua conta do Discord pra ver (e, com o cargo de mestre, controlar) a música da mesa.</p>
+      <a class="botao principal" href="/auth/login">Entrar com o Discord</a>
+    </section>
+
+    <section id="tela-painel" hidden>
+      <div class="linha">
+        <label for="servidor">Servidor</label>
+        <select id="servidor"></select>
+        <span id="conexao" class="selo">—</span>
+      </div>
+
+      <div class="cartao" id="agora">
+        <div class="rotulo">Tocando agora <span id="canal" class="canal"></span></div>
+        <div id="titulo" class="titulo">Nada tocando</div>
+        <div class="progresso"><div id="barra"></div></div>
+        <div class="tempos"><span id="decorrido"></span><span id="duracao"></span></div>
+        <div class="controles so-mestre">
+          <button data-cmd="pausar_continuar" id="btn-pausa" type="button" title="Pausar / continuar">⏯</button>
+          <button data-cmd="pular" type="button" title="Pular">⏭</button>
+          <button data-cmd="parar" type="button" title="Parar e limpar a fila">⏹</button>
+          <button data-cmd="repetir" data-modo="faixa" id="btn-rep-faixa" type="button" title="Repetir a música">🔂</button>
+          <button data-cmd="repetir" data-modo="fila" id="btn-rep-fila" type="button" title="Repetir a fila">🔁</button>
+          <label class="volume">🔊 <input id="volume" type="range" min="0" max="100" step="5"> <span id="volume-num"></span></label>
+        </div>
+        <form id="form-tocar" class="tocar so-mestre">
+          <input id="pedido" type="text" maxlength="300" placeholder="Link (YouTube, SoundCloud...) ou busca: triste e bloodborne" autocomplete="off">
+          <button class="principal" type="submit">Tocar</button>
+        </form>
+      </div>
+
+      <div class="cartao">
+        <div class="rotulo">Fila <span id="fila-info"></span>
+          <button data-cmd="limpar_fila" class="discreto so-mestre direita" type="button">limpar</button></div>
+        <ol id="fila" class="fila"></ol>
+      </div>
+
+      <div class="cartao so-mestre">
+        <div class="rotulo">Playlists salvas</div>
+        <ul id="playlists" class="lista"></ul>
+        <form id="form-salvar" class="tocar">
+          <input id="nome-playlist" type="text" maxlength="60" placeholder="Salvar a fila atual como…" autocomplete="off">
+          <button type="submit">Salvar</button>
+        </form>
+      </div>
+
+      <section id="mixer"></section>
+
+      <p id="aviso" class="aviso" role="status" aria-live="polite"></p>
+      <p id="leitura" class="dica" hidden>Você está vendo em modo leitura: comandar pede o cargo de mestre (Condutor).</p>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,0 +1,68 @@
+/* Paleta amostrada de docs/img/natty.jpg */
+:root {
+  --fundo: #090808;
+  --fundo-fundo: #010103;
+  --painel: #1a1a1c;
+  --marrom: #41302b;
+  --marrom-medio: #705e5a;
+  --creme: #c0a89d;
+  --dourado: #c08e5a;
+  --ciano: #42b6cb;
+  --erro: #d0705a;
+}
+* { box-sizing: border-box; }
+html { background: var(--fundo-fundo); }
+body {
+  margin: 0; min-height: 100vh; color: var(--creme);
+  background: radial-gradient(circle at 50% 0, var(--marrom) 0, var(--fundo) 45%, var(--fundo-fundo) 100%);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+[hidden] { display: none !important; }
+.topo { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--marrom); }
+h1 { margin: 0; font-size: 20px; color: var(--dourado); letter-spacing: .5px; }
+h1 .sub { color: var(--marrom-medio); font-weight: 400; font-size: 15px; }
+.usuario { display: flex; align-items: center; gap: 8px; }
+.usuario img { border-radius: 50%; background: var(--marrom); }
+main { max-width: 760px; margin: 0 auto; padding: 16px; }
+.cartao { background: var(--painel); border: 1px solid var(--marrom); border-radius: 12px; padding: 14px; margin: 12px 0; }
+.centro { text-align: center; padding: 32px 16px; }
+.linha { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.rotulo { color: var(--marrom-medio); font-size: 12px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; display: flex; gap: 8px; align-items: center; }
+.direita { margin-left: auto; }
+.canal { color: var(--ciano); text-transform: none; letter-spacing: 0; }
+.titulo { font-size: 19px; color: #e8d6cc; overflow-wrap: anywhere; }
+.progresso { height: 4px; background: var(--marrom); border-radius: 2px; margin: 10px 0 4px; overflow: hidden; }
+#barra { height: 100%; width: 0; background: var(--ciano); transition: width .5s linear; }
+.tempos { display: flex; justify-content: space-between; font-size: 12px; color: var(--marrom-medio); font-variant-numeric: tabular-nums; }
+.controles { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+button, .botao, select, input[type=text] {
+  font: inherit; color: var(--creme); background: var(--fundo); border: 1px solid var(--marrom);
+  border-radius: 8px; padding: 7px 12px; cursor: pointer; text-decoration: none;
+}
+input[type=text] { cursor: text; flex: 1; min-width: 0; }
+button:hover, .botao:hover, select:hover { border-color: var(--marrom-medio); }
+button:focus-visible, input:focus-visible, select:focus-visible, .botao:focus-visible { outline: 2px solid var(--ciano); outline-offset: 1px; }
+button:disabled { opacity: .45; cursor: default; }
+.principal { background: var(--dourado); color: var(--fundo-fundo); border-color: var(--dourado); font-weight: 600; }
+.ligado { border-color: var(--ciano); color: var(--ciano); }
+.discreto { background: transparent; border-color: transparent; color: var(--marrom-medio); padding: 4px 8px; }
+.volume { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+input[type=range] { accent-color: var(--dourado); width: 120px; }
+.tocar { display: flex; gap: 8px; margin-top: 10px; }
+.fila, .lista { margin: 0; padding-left: 0; list-style: none; }
+.fila li, .lista li { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid #262224; }
+.fila li:first-child, .lista li:first-child { border-top: 0; }
+.fila .pos { color: var(--marrom-medio); width: 2em; text-align: right; font-variant-numeric: tabular-nums; }
+.fila .nome, .lista .nome { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.fila .dur { color: var(--marrom-medio); font-size: 12px; }
+.vazio { color: var(--marrom-medio); font-style: italic; }
+.selo { font-size: 12px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--marrom); color: var(--marrom-medio); }
+.selo.on { color: var(--ciano); border-color: var(--ciano); }
+.aviso { min-height: 1.4em; color: var(--dourado); }
+.aviso.erro { color: var(--erro); }
+.dica { color: var(--marrom-medio); font-size: 13px; }
+.leitura .so-mestre { display: none !important; }
+@media (max-width: 520px) {
+  .volume { margin-left: 0; width: 100%; }
+  input[type=range] { flex: 1; }
+}

@@ -14,6 +14,9 @@ cobre os módulos ativos da Natty:
   call) e a Escriba (ata da sessão: grava e transcreve no fim). Vosk offline
   com vocabulário fechado; Whisper local pro nome da música; faster-whisper
   pra ata.
+- **Painel** (`modules/painel/`) — painel web (aiohttp, localhost) pra ver e
+  controlar o Bardo. É uma *superfície*, não uma capacidade: fala com os
+  módulos só por `bot.controles["<módulo>"]`, nunca importando.
 - **Sieve** (`modules/sieve/`) — análise de repositórios de terceiros (só
   documentação/skill, não é Cog).
 
@@ -80,7 +83,8 @@ Natty/
     │   │   conditional_rerolls.py, test_*.py
     │   └── README.md          # regras e limites do módulo
     ├── bardo/                 # música (YouTube, fila, dataset de trilhas)
-    │   ├── cog.py, service.py, youtube.py, test_service.py
+    │   ├── cog.py, motor.py (player), service.py, storage.py (bardo.db),
+    │   │   youtube.py, eventos.py, test_*.py
     │   ├── dataset/           # musicas.json + vocabulario.json (versionados)
     │   └── README.md
     ├── socorro/               # ajuda: "natty socorro [módulo]" e /socorro
@@ -91,6 +95,7 @@ Natty/
     │   ├── test_*.py
     │   ├── assets/            # modelo do Vosk, baixado à mão — NÃO vai pro git
     │   └── README.md
+    ├── painel/                # painel web (aiohttp + static/), fala via bot.controles
     └── sieve/                 # skill de análise de repositórios (Findings/)
 ```
 

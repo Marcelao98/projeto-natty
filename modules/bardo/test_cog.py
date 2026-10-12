@@ -5,11 +5,12 @@ repetir a fila, playlist, erros com motivo e sair da call vazia.
 """
 
 import asyncio
+import json
 import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from modules.bardo import cog
+from modules.bardo import cog, motor
 
 
 class ConexaoComum:
@@ -260,14 +261,14 @@ class TestErrosComMotivo(unittest.TestCase):
 
     def test_erro_desconhecido_continua_generico(self):
         mock.patch.object(cog.service, "resolver_musica", side_effect=RuntimeError("boom")).start()
-        with self.assertLogs(cog.log, "ERROR"):
+        with self.assertLogs(motor.log, "ERROR"):
             resposta = asyncio.run(self.c._tocar(self.guild, self.membro, None, "https://youtu.be/x"))
         self.assertEqual(resposta, "Não consegui pegar essa música. Confere o link?")
 
     def test_busca_livre_sem_resultado_nao_gera_traceback(self):
         mock.patch.object(cog.service, "resolver_por_busca_livre",
                           side_effect=cog.service.NadaEncontrado("nada")).start()
-        with self.assertNoLogs(cog.log, "WARNING"):
+        with self.assertNoLogs(motor.log, "WARNING"):
             resposta = asyncio.run(self.c._tocar_do_youtube(self.guild, self.membro, None, "kobold"))
         self.assertIn('Não achei nada pra "kobold"', resposta)
 
@@ -355,6 +356,59 @@ class TestSairDaCallVazia(unittest.TestCase):
 
         asyncio.run(cenario())
         self.assertNotIn(1, self.c._saidas)
+
+
+class TestControleDoPainel(unittest.TestCase):
+    """bot.controles["bardo"]: estado em JSON simples e eventos a cada mudança."""
+
+    def setUp(self):
+        self.bot = SimpleNamespace(user=None)
+        self.c = cog.BardoCog(bot=self.bot)
+        asyncio.run(self.c.cog_load())
+        self.controle = self.bot.controles["bardo"]
+        self.conexao = ConexaoComum()
+        self.conexao.is_connected = lambda: True
+        self.conexao.is_paused = lambda: True
+        self.conexao.channel = SimpleNamespace(name="Taverna")
+        self.conexao.source = None
+        self.guild = SimpleNamespace(id=1, voice_client=self.conexao)
+
+    def test_estado(self):
+        fila = self.c._fila(self.guild)
+        fila.tocando = cog.service.Musica("Garçom", "https://youtu.be/a", 90)
+        fila.adicionar(cog.service.Musica("Hope", "https://youtu.be/b"))
+        estado = self.controle.estado(self.guild)
+        self.assertEqual(estado["tocando"], {"titulo": "Garçom", "link": "https://youtu.be/a", "duracao": 90})
+        self.assertEqual([m["titulo"] for m in estado["proximas"]], ["Hope"])
+        self.assertTrue(estado["conectado"] and estado["pausado"])
+        self.assertEqual((estado["canal"], estado["volume"]), ("Taverna", 50))
+        json.dumps(estado)  # vai pro painel como JSON
+
+    def test_cada_mudanca_publica(self):
+        recebidos = []
+        self.controle.assinar(recebidos.append)
+        self.c._mudar_volume(self.guild, cog.service.Pedido("volume", volume=30))
+        self.c._fila(self.guild).adicionar(cog.service.Musica("Hope", "https://youtu.be/b"))
+        self.c._limpar_fila(self.guild)
+        asyncio.run(self.c._parar(self.guild))
+        self.assertEqual(recebidos, [1, 1, 1])
+        self.controle.cancelar(recebidos.append)
+        self.c._mudar_volume(self.guild, cog.service.Pedido("volume", volume=40))
+        self.assertEqual(len(recebidos), 3)
+
+    def test_assinante_quebrado_nao_atrapalha(self):
+        self.controle.assinar(lambda gid: 1 / 0)
+        with self.assertLogs("modules.bardo.eventos", "ERROR"):
+            self.assertIn("Volume em 30%", self.c._mudar_volume(self.guild, cog.service.Pedido("volume", volume=30)))
+
+    def test_mestre(self):
+        cargo = lambda nome: SimpleNamespace(name=nome)  # noqa: E731
+        dono = SimpleNamespace(id=7, guild=SimpleNamespace(owner_id=7), roles=[])
+        condutor = SimpleNamespace(id=8, guild=SimpleNamespace(owner_id=7), roles=[cargo("Condutor")])
+        viajante = SimpleNamespace(id=9, guild=SimpleNamespace(owner_id=7), roles=[cargo("Viajante")])
+        self.assertTrue(self.controle.pode_controlar(dono))
+        self.assertTrue(self.controle.pode_controlar(condutor))
+        self.assertFalse(self.controle.pode_controlar(viajante))
 
 
 if __name__ == "__main__":

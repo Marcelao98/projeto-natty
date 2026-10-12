@@ -1,5 +1,12 @@
 # Changelog
 
+## Bardo, etapa 4: motor separado e painel web (leitura) - 2026-10-12
+
+- `modules/bardo/motor.py`: o player (tocar, pular, reconectar, sair da call) saiu do cog; o cog só traduz comando. `eventos.py`: pub/sub que o motor alimenta a cada mudança.
+- `bot.controles["bardo"]` (`ControleBardo`): estado em JSON, assinatura de eventos e checagem de mestre — o jeito de uma superfície falar com o Bardo sem importar o módulo.
+- Novo `modules/painel/`: aiohttp no mesmo loop do bot, só em 127.0.0.1; login OAuth2 do Discord com state anti-CSRF; sessão em cookie HttpOnly/SameSite=Lax; WebSocket com o estado ao vivo; origem e autorização conferidas ao vivo. Front em HTML/JS/CSS puros. Liga só com `DISCORD_CLIENT_SECRET`.
+- Testes: Bardo 166, Painel 14.
+
 ## Bardo, etapa 3: banco próprio, playlists e cenas por servidor - 2026-10-12
 
 - `data/bardo.db` (fora do git) com `storage.py` como único lugar que fala SQL: playlists, sons, cenas e descobertas, tudo por servidor.
