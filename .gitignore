@@ -34,3 +34,7 @@ data/*.db-wal
 data/*.db-shm
 data/*.db-journal
 data/backups/
+
+# Bardo: pasta de músicas locais e sons enviados (áudio de terceiros, pesado)
+data/musicas/
+data/som/

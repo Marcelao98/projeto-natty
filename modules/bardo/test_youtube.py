@@ -91,5 +91,19 @@ class ListarPlaylist(unittest.TestCase):
                 youtube.listar_playlist("https://www.youtube.com/playlist?list=PLx")
 
 
+class OutrosSites(unittest.TestCase):
+    def test_link_nao_suportado(self):
+        erro = youtube.traduzir_erro(Exception("ERROR: Unsupported URL: https://example.com/x"))
+        self.assertIs(type(erro), youtube.LinkNaoSuportado)
+
+    def test_set_do_soundcloud_usa_a_pagina_da_faixa(self):
+        info = {"title": "Taverna", "entries": [
+            {"ie_key": "Soundcloud", "id": "123", "url": "https://soundcloud.com/bardo/hidromel", "title": "Hidromel"},
+        ]}
+        with com_ytdlp(info=info):
+            itens = youtube.listar_playlist("https://soundcloud.com/bardo/sets/taverna")["itens"]
+        self.assertEqual(itens[0]["link"], "https://soundcloud.com/bardo/hidromel")
+
+
 if __name__ == "__main__":
     unittest.main()

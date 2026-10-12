@@ -14,6 +14,7 @@ futuro módulo de LLM) poder chamar direto.
 from __future__ import annotations
 
 import json
+import os
 import random
 import re
 import shlex
@@ -36,6 +37,10 @@ from modules.bardo.youtube import (  # noqa: F401 (reexportados pro cog)
     VideoPrivado,
 )
 
+# Qualquer link (SoundCloud, Bandcamp, anexo do Discord...): quem resolve é o
+# yt-dlp, que entende centenas de sites. O do YouTube continua à parte
+# porque é o único que entra no dataset.
+_URL_RE = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
 _YOUTUBE_URL_RE = re.compile(
     r"(https?://)?(www\.|music\.|m\.)?"
     r"(youtube\.com/watch\?v=[\w-]+|youtu\.be/[\w-]+|youtube\.com/playlist\?list=[\w-]+)(\S*)?",
@@ -88,12 +93,15 @@ SEGUNDOS_ANTES_DE_SAIR = 60
 SEGUNDOS_PARA_FALHA_RAPIDA = 5
 
 
-def opcoes_ffmpeg(http_headers: dict[str, str] | None = None) -> dict[str, str]:
+def opcoes_ffmpeg(http_headers: dict[str, str] | None = None, local: bool = False) -> dict[str, str]:
     """FFMPEG_OPTIONS com os headers que o yt-dlp usou pra resolver a URL.
 
     Sem eles o FFmpeg se apresenta com o User-Agent dele, e o YouTube
-    recusa a URL de áudio com mais frequência.
+    recusa a URL de áudio com mais frequência. Arquivo local (`local`) não
+    leva as flags de reconexão, que são de HTTP.
     """
+    if local:
+        return {"options": FFMPEG_OPTIONS["options"]}
     if not http_headers:
         return dict(FFMPEG_OPTIONS)
     headers = "".join(f"{k}: {v}\r\n" for k, v in http_headers.items())
@@ -140,11 +148,11 @@ def interpretar_pedido(texto: str) -> Pedido | None:
     Não verifica se o texto é dirigido à Natty — isso é com o cog, que exige
     menção de verdade (@Natty ou o cargo). Escrever só "natty" não basta.
     """
-    link = extrair_link_youtube(texto)
+    link = extrair_link(texto)
     # O link e as menções saem antes das outras regras: "para" ou "volta"
     # dentro de uma URL não pode virar comando, nem o id de uma menção virar
     # volume.
-    sem_link = _MENCAO_RE.sub(" ", _YOUTUBE_URL_RE.sub(" ", texto))
+    sem_link = _MENCAO_RE.sub(" ", _URL_RE.sub(" ", _YOUTUBE_URL_RE.sub(" ", texto)))
 
     if link and _TOCAR_RE.search(sem_link):
         return Pedido("tocar", link=link)
@@ -600,19 +608,33 @@ def buscar_musicas(
     return [Musica(m["nome"], m["link"]) for m in escolhidas], len(resultados)
 
 
+def extrair_link(texto: str) -> str | None:
+    """O primeiro link do texto: do YouTube se tiver, senão qualquer outro (SoundCloud, Bandcamp...)."""
+    youtube_ = extrair_link_youtube(texto)
+    if youtube_:
+        return youtube_
+    m = _URL_RE.search(texto)
+    return m.group(0).rstrip(".,!?;:)") if m else None
+
+
 def extrair_link_youtube(texto: str) -> str | None:
     """Extrai a primeira URL de YouTube (vídeo ou playlist) encontrada no texto, ou None."""
     m = _YOUTUBE_URL_RE.search(texto)
     return m.group(0) if m else None
 
 
+_PLAYLIST_RE = re.compile(
+    r"youtube\.com/playlist\?|soundcloud\.com/[^/\s]+/sets/|bandcamp\.com/album/", re.IGNORECASE
+)
+
+
 def eh_link_de_playlist(link: str) -> bool:
-    """Link de playlist ("youtube.com/playlist?list=...")?
+    """Link de playlist (YouTube "playlist?list=", set do SoundCloud, álbum do Bandcamp)?
 
     Link de vídeo com "&list=" (vídeo aberto dentro de uma playlist) continua
     sendo só aquele vídeo: é o que a pessoa estava vendo quando copiou.
     """
-    return "/playlist?" in link.lower()
+    return bool(_PLAYLIST_RE.search(link))
 
 
 def listar_playlist(link: str) -> tuple[str, list[Musica]]:
@@ -626,13 +648,73 @@ def listar_playlist(link: str) -> tuple[str, list[Musica]]:
 
 
 def resolver_musica(url: str) -> dict:
-    """Resolve um link de YouTube em algo tocável.
+    """Resolve um link (YouTube, outro site, ou "arquivo:<nome>" da pasta local) em algo tocável.
 
     Retorna {"titulo": str, "stream_url": str, "duracao_segundos": int|None,
-    "http_headers": dict} — os headers vão pro FFmpeg via opcoes_ffmpeg().
-    Levanta ErroDeMusica (VideoPrivado, RestricaoDeIdade...) com o motivo.
+    "http_headers": dict, "local": bool} — os headers vão pro FFmpeg via
+    opcoes_ffmpeg(). Levanta ErroDeMusica (VideoPrivado, RestricaoDeIdade,
+    ArquivoNaoEncontrado...) com o motivo.
     """
-    return youtube.resolver_stream(url)
+    if eh_arquivo_local(url):
+        caminho = caminho_local(url)
+        return {"titulo": caminho.stem, "stream_url": str(caminho), "duracao_segundos": None,
+                "http_headers": {}, "local": True}
+    return {**youtube.resolver_stream(url), "local": False}
+
+
+# ---------------------------------------------------------------------------
+# Arquivos locais
+#
+# Uma pasta de músicas na máquina da Natty (BARDO_PASTA_LOCAL, padrão
+# data/musicas/, fora do git). Entram na busca depois do dataset e antes do
+# YouTube: "@Natty toca tema da taverna" acha "data/musicas/Tema da Taverna.mp3".
+# Na fila, o link é "arquivo:<caminho relativo à pasta>".
+# ---------------------------------------------------------------------------
+
+_RAIZ_DO_PROJETO = Path(__file__).resolve().parents[2]
+PREFIXO_LOCAL = "arquivo:"
+EXTENSOES_DE_AUDIO = {".mp3", ".ogg", ".opus", ".wav", ".flac", ".m4a", ".webm", ".aac"}
+
+
+class ArquivoNaoEncontrado(ErroDeMusica):
+    motivo = "o arquivo não está mais na pasta de músicas"
+
+
+def pasta_local() -> Path:
+    pasta = Path(os.getenv("BARDO_PASTA_LOCAL") or "data/musicas")
+    return pasta if pasta.is_absolute() else _RAIZ_DO_PROJETO / pasta
+
+
+def eh_arquivo_local(link: str) -> bool:
+    return link.startswith(PREFIXO_LOCAL)
+
+
+def caminho_local(link: str, pasta: Path | None = None) -> Path:
+    """"arquivo:<relativo>" → caminho absoluto, só se estiver DENTRO da pasta (nada de "../")."""
+    pasta = (pasta or pasta_local()).resolve()
+    caminho = (pasta / link[len(PREFIXO_LOCAL):]).resolve()
+    if pasta not in caminho.parents or not caminho.is_file():
+        raise ArquivoNaoEncontrado(link)
+    return caminho
+
+
+def buscar_arquivos_locais(texto_busca: str, pasta: Path | None = None) -> list[Musica]:
+    """Arquivos de áudio da pasta local cujo nome (com as subpastas) tem todas as palavras da busca."""
+    pasta = pasta or pasta_local()
+    if not pasta.is_dir():
+        return []
+    palavras = [p for p in _normalizar(texto_busca).split() if p not in _FILLER_WORDS]
+    if not palavras:
+        return []
+    achados = []
+    for arquivo in sorted(pasta.rglob("*")):
+        if arquivo.suffix.lower() not in EXTENSOES_DE_AUDIO or not arquivo.is_file():
+            continue
+        relativo = arquivo.relative_to(pasta).as_posix()
+        nome = _normalizar(re.sub(r"[_\-.]+", " ", relativo))
+        if all(p in nome for p in palavras):
+            achados.append(Musica(arquivo.stem, PREFIXO_LOCAL + relativo))
+    return achados[:MAX_RESULTADOS_DA_BUSCA]
 
 
 # ---------------------------------------------------------------------------

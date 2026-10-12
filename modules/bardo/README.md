@@ -55,6 +55,23 @@ aceita mensagens da própria Natty com esse marcador como se fossem menção.
   (continuar), `@Natty toca a próxima` (pular), `@Natty coloca o volume em 30`.
 - `@Natty adiciona na fila Garçom` busca "Garçom" (o "na fila" sai da busca).
 
+## Outras fontes (desde 12/10/2026)
+
+- **Qualquer link que o yt-dlp entende**: SoundCloud, Bandcamp, Vimeo, link
+  direto de .mp3... `@Natty toca https://soundcloud.com/...`. Set do
+  SoundCloud e álbum do Bandcamp entram como playlist. Site que o yt-dlp
+  não conhece: "não sei tocar desse site" (`LinkNaoSuportado`).
+- **Anexo do Discord**: `@Natty toca` com um arquivo de áudio anexado toca o anexo.
+- **Pasta local**: arquivos de áudio em `data/musicas/` (ou
+  `BARDO_PASTA_LOCAL` no `.env`; fora do git) entram na busca **depois do
+  dataset e antes do YouTube**: `@Natty toca tema da taverna` acha
+  `data/musicas/taverna/Tema_da_Taverna.mp3` (todas as palavras no nome,
+  subpastas contam). Na fila o link fica `arquivo:<caminho relativo>`, e o
+  caminho é conferido pra nunca sair da pasta. Arquivo local toca sem as
+  flags de reconexão do FFmpeg (são de HTTP). É a fonte certa pra ambiente
+  longo: a URL do YouTube expira.
+- Spotify não dá (DRM). Freesound precisaria de chave de API, fica de fora.
+
 ## Playlist do YouTube (desde 12/10/2026)
 
 Link de playlist (`youtube.com/playlist?list=...`) põe a playlist inteira
@@ -325,7 +342,6 @@ dublês do Discord. A parte de voz é validada à mão no Discord.
 - Classificar as 37 faixas "não classificado" e trilhas de taverna de verdade
 - Completar Dark Souls no dataset (hoje 3 faixas)
 - Volume por voz (os outros controles — tocar, parar, próxima, repete, pausa, continua — já funcionam pelo Echo; ver README do Echo, "Controles do Bardo por voz")
-- Fontes além de YouTube (arquivo local, SoundCloud/Bandcamp via yt-dlp) — etapa 2
 - Validar ao vivo: playlist, repetir a fila e a saída da call vazia (testados só com dublês)
 
 Resolvidos: o "era essa?" que aceitava qualquer mensagem já era só por

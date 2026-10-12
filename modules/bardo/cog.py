@@ -115,6 +115,11 @@ class BardoCog(commands.Cog):
             return
 
         guild = message.guild
+        if pedido.acao == "tocar" and not pedido.link and not pedido.busca:
+            # "@Natty toca" com um arquivo de áudio anexado: toca o anexo.
+            anexo = next((a for a in message.attachments if (a.content_type or "").startswith("audio/")), None)
+            if anexo is not None:
+                pedido = service.Pedido("tocar", link=anexo.url)
         if pedido.acao == "tocar":
             if pedido.link:
                 async with message.channel.typing():
@@ -170,14 +175,14 @@ class BardoCog(commands.Cog):
     @app_commands.command(
         name="tocar", description="Toca um link (vídeo ou playlist do YouTube) ou uma busca no dataset (ou põe na fila)"
     )
-    @app_commands.describe(pedido="Link do YouTube (vídeo ou playlist), ou uma busca como: triste e bloodborne")
+    @app_commands.describe(pedido="Link (YouTube, SoundCloud, Bandcamp...; vídeo ou playlist), ou uma busca: triste e bloodborne")
     @app_commands.guild_only()
     async def tocar(self, interaction: discord.Interaction, pedido: str):
         # Resolver o link no yt-dlp passa fácil dos 3s que o Discord dá pra responder.
         await interaction.response.defer(thinking=True)
-        link_youtube = service.extrair_link_youtube(pedido)
-        if link_youtube:
-            resposta = await self._tocar(interaction.guild, interaction.user, interaction.channel, link_youtube)
+        link = service.extrair_link(pedido)
+        if link:
+            resposta = await self._tocar(interaction.guild, interaction.user, interaction.channel, link)
         else:
             resposta = await self._tocar_busca(interaction.guild, interaction.user, interaction.channel, pedido)
         enviada = await interaction.followup.send(resposta, wait=True)
@@ -307,6 +312,10 @@ class BardoCog(commands.Cog):
             return "Entra num canal de voz primeiro, aí eu toco."
 
         musicas, achadas = service.buscar_musicas(busca)
+        if not musicas:
+            # Depois do dataset, a pasta de músicas local; só então o YouTube.
+            musicas = service.buscar_arquivos_locais(busca)
+            achadas = len(musicas)
         if not musicas:
             return await self._tocar_do_youtube(guild, membro, canal_de_texto, busca)
 
@@ -439,7 +448,9 @@ class BardoCog(commands.Cog):
         tentativa: int = 0,
     ) -> None:
         fonte = discord.PCMVolumeTransformer(
-            discord.FFmpegPCMAudio(info["stream_url"], **service.opcoes_ffmpeg(info.get("http_headers"))),
+            discord.FFmpegPCMAudio(
+                info["stream_url"], **service.opcoes_ffmpeg(info.get("http_headers"), local=info.get("local", False))
+            ),
             volume=self._volume(guild) / 100,
         )
         inicio = time.monotonic()

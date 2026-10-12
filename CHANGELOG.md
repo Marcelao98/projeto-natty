@@ -1,5 +1,12 @@
 # Changelog
 
+## Bardo, etapa 2: outras fontes - 2026-10-12
+
+- Qualquer link que o yt-dlp entende (SoundCloud, Bandcamp, link direto...); set do SoundCloud e álbum do Bandcamp entram como playlist; `LinkNaoSuportado` pra site desconhecido.
+- `@Natty toca` com áudio anexado toca o anexo.
+- Pasta local `data/musicas/` (`BARDO_PASTA_LOCAL`, fora do git): busca pelo nome do arquivo depois do dataset e antes do YouTube; caminho preso à pasta.
+- Testes: Bardo 146.
+
 ## Bardo, etapa 1: fila completa - 2026-10-12
 
 - **Playlist do YouTube**: `@Natty toca <link da playlist>` (ou `/tocar`) põe a playlist inteira na fila (até 50), pulando vídeos privados/apagados. Link de vídeo com `&list=` continua tocando só o vídeo.

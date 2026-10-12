@@ -46,6 +46,11 @@ from modules.bardo.service import (  # noqa: E402
     deve_sair_do_canal,
     eh_link_de_playlist,
     listar_playlist,
+    ArquivoNaoEncontrado,
+    buscar_arquivos_locais,
+    caminho_local,
+    extrair_link,
+    resolver_musica,
 )
 
 LINK = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
@@ -720,6 +725,64 @@ class SairDoCanal(unittest.TestCase):
         self.assertTrue(deve_sair_do_canal(0, echo_escutando=False))
         self.assertFalse(deve_sair_do_canal(1, echo_escutando=False))
         self.assertFalse(deve_sair_do_canal(0, echo_escutando=True))
+
+
+class OutrasFontes(unittest.TestCase):
+    def test_link_de_outro_site_vira_tocar(self):
+        for link in ["https://soundcloud.com/bardo/hidromel", "https://bardo.bandcamp.com/track/taverna",
+                     "https://cdn.discordapp.com/attachments/1/2/tema.mp3"]:
+            with self.subTest(link=link):
+                self.assertEqual(interpretar_pedido(f"natty toca {link}"), Pedido("tocar", link=link))
+
+    def test_youtube_tem_preferencia_e_pontuacao_sai(self):
+        self.assertEqual(extrair_link(f"natty toca https://x.com/a, ou {LINK}"), LINK)
+        self.assertEqual(extrair_link("toca https://soundcloud.com/a/b."), "https://soundcloud.com/a/b")
+
+    def test_playlists_de_outros_sites(self):
+        self.assertTrue(eh_link_de_playlist("https://soundcloud.com/bardo/sets/taverna"))
+        self.assertTrue(eh_link_de_playlist("https://bardo.bandcamp.com/album/tavernas"))
+        self.assertFalse(eh_link_de_playlist("https://bardo.bandcamp.com/track/taverna"))
+
+    def test_link_no_texto_nao_vira_comando(self):
+        self.assertEqual(interpretar_pedido("natty toca https://soundcloud.com/volta/para-casa").acao, "tocar")
+
+
+class ArquivosLocais(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.pasta = Path(self.tmp.name)
+        (self.pasta / "taverna").mkdir()
+        for nome in ["taverna/Tema_da_Taverna.mp3", "Chuva na Floresta.ogg", "notas.txt"]:
+            (self.pasta / nome).write_bytes(b"x")
+
+    def test_busca_pelo_nome_e_subpasta(self):
+        self.assertEqual(buscar_arquivos_locais("tema da taverna", self.pasta),
+                         [Musica("Tema_da_Taverna", "arquivo:taverna/Tema_da_Taverna.mp3")])
+        self.assertEqual([m.titulo for m in buscar_arquivos_locais("chuva", self.pasta)], ["Chuva na Floresta"])
+        self.assertEqual(buscar_arquivos_locais("notas", self.pasta), [])  # não é áudio
+        self.assertEqual(buscar_arquivos_locais("dragão", self.pasta), [])
+
+    def test_pasta_que_nao_existe(self):
+        self.assertEqual(buscar_arquivos_locais("chuva", self.pasta / "nada"), [])
+
+    def test_caminho_so_dentro_da_pasta(self):
+        self.assertEqual(caminho_local("arquivo:Chuva na Floresta.ogg", self.pasta),
+                         (self.pasta / "Chuva na Floresta.ogg").resolve())
+        (self.pasta.parent / "segredo.mp3").write_bytes(b"x")
+        self.addCleanup((self.pasta.parent / "segredo.mp3").unlink)
+        for link in ["arquivo:../segredo.mp3", "arquivo:/etc/passwd", "arquivo:sumiu.mp3"]:
+            with self.subTest(link=link), self.assertRaises(ArquivoNaoEncontrado):
+                caminho_local(link, self.pasta)
+
+    def test_resolver_arquivo_local(self):
+        with mock.patch.dict(os.environ, {"BARDO_PASTA_LOCAL": str(self.pasta)}):
+            info = resolver_musica("arquivo:Chuva na Floresta.ogg")
+        self.assertTrue(info["local"])
+        self.assertEqual(info["titulo"], "Chuva na Floresta")
+
+    def test_ffmpeg_local_sem_flags_de_http(self):
+        self.assertEqual(opcoes_ffmpeg(local=True), {"options": "-vn"})
 
 
 if __name__ == "__main__":

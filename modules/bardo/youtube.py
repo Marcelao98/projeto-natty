@@ -1,8 +1,9 @@
-"""Acesso cru ao YouTube via yt-dlp.
+"""Acesso cru ao YouTube (e aos outros sites que o yt-dlp entende) via yt-dlp.
 
 Espelha o papel de `modules/core/sheets.py`: é a única peça do Bardo que
 fala com um sistema externo (aqui, extrai a URL de áudio direto de um vídeo
-do YouTube). Nenhuma lógica de negócio mora aqui, só a chamada crua.
+do YouTube, de uma faixa do SoundCloud/Bandcamp, de um anexo do Discord...).
+Nenhuma lógica de negócio mora aqui, só a chamada crua.
 
 Os erros do yt-dlp saem daqui já traduzidos em ErroDeMusica (vídeo privado,
 com restrição de idade, indisponível...), pra quem chama poder dizer à mesa
@@ -65,6 +66,10 @@ class PlaylistIndisponivel(ErroDeMusica):
     motivo = "a playlist não existe ou é privada"
 
 
+class LinkNaoSuportado(ErroDeMusica):
+    motivo = "não sei tocar desse site"
+
+
 class NadaEncontrado(ErroDeMusica, LookupError):
     motivo = "a busca não trouxe nenhum resultado"
 
@@ -77,6 +82,7 @@ _TRADUCOES: list[tuple[tuple[str, ...], type[ErroDeMusica]]] = [
     (("members-only", "members only", "join this channel"), SoParaMembros),
     (("available in your country", "geo restrict", "blocked it in your country"), BloqueadoNaRegiao),
     (("playlist does not exist", "playlist is private", "unviewable playlist"), PlaylistIndisponivel),
+    (("unsupported url",), LinkNaoSuportado),
     (("video unavailable", "is unavailable", "has been removed", "does not exist", "no longer available"),
      VideoIndisponivel),
 ]
@@ -149,19 +155,26 @@ def listar_playlist(url: str) -> dict:
 def _itens_da_playlist(info: dict, url: str) -> dict:
     itens = []
     for e in info.get("entries") or []:
-        if not e or not e.get("id"):
+        if not e or not (e.get("id") or e.get("url")):
             continue
         titulo = e.get("title") or ""
         if titulo in ("[Private video]", "[Deleted video]"):
             continue
         itens.append({
             "titulo": titulo or "música desconhecida",
-            "link": f"https://www.youtube.com/watch?v={e['id']}",
+            "link": _link_do_item(e),
             "duracao_segundos": e.get("duration"),
         })
     if not itens:
         raise NadaEncontrado(f"playlist vazia: {url!r}")
     return {"titulo": info.get("title") or "playlist", "itens": itens}
+
+
+def _link_do_item(item: dict) -> str:
+    """Link que não expira de um item de playlist: watch do YouTube ou a página da faixa (SoundCloud, Bandcamp)."""
+    if (item.get("ie_key") or "Youtube").startswith("Youtube") and item.get("id"):
+        return f"https://www.youtube.com/watch?v={item['id']}"
+    return item.get("webpage_url") or item["url"]
 
 
 def _extrair(url: str) -> dict:
