@@ -63,6 +63,7 @@ são locais.
 | 27 a 29/09 | Tocar música, montar fila, buscar por tema e aprender faixas novas com a mesa. |
 | 30/09 a 02/10 | **Ouvir** a call: atender a senha "NAT20, por favor" e, depois, gravar a ata da sessão. |
 | 05/10 | Guardar tudo num banco próprio e registrar as missões da guilda. |
+| 12/10 | Tocar playlist inteira, repetir a fila, tirar música da fila e sair da call quando todo mundo vai embora. |
 
 O que vem depois: virar uma **camada inteligente** sobre as ferramentas que a
 mesa já usa (Avrae, Foundry, Kenku), entendendo pedidos em linguagem natural
@@ -130,10 +131,11 @@ Regras e limites em [`modules/dice/README.md`](modules/dice/README.md).
 | Pedido | Exemplos | Slash |
 |---|---|---|
 | Tocar / pôr na fila | `@Natty toca <link>`, `@Natty toca triste e fire emblem` | `/tocar` |
+| Playlist do YouTube inteira | `@Natty toca <link da playlist>` | `/tocar` |
 | Pular | `@Natty pula`, `@Natty próxima` | `/pular` |
-| Fila | `@Natty fila`, `@Natty limpa a fila` | `/fila`, `/limpar-fila` |
+| Fila | `@Natty fila`, `@Natty limpa a fila`, `@Natty tira a 3 da fila` | `/fila`, `/limpar-fila`, `/remover` |
 | Pausar / continuar | `@Natty pausa`, `@Natty continua` | `/pausar`, `/continuar` |
-| Repetir a faixa atual | `@Natty repete` (de novo desliga), `@Natty para de repetir` | — |
+| Repetir a faixa ou a fila | `@Natty repete`, `@Natty repete a fila`, `@Natty para de repetir` | `/repetir` |
 | Parar (limpa a fila, **continua na call**) | `@Natty para` | `/parar` |
 | Volume | `@Natty volume 30`, `@Natty aumenta o volume` | `/volume` |
 

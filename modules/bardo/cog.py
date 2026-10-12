@@ -7,8 +7,12 @@ Nenhuma lógica de reconhecimento de pedido mora aqui.
 
 Dois jeitos de pedir, como no Dice: em linguagem natural ("@Natty toca
 <link>", "natty pula", "@Natty volume 30") ou pelos slash commands
-(/tocar, /pular, /fila, /limpar-fila, /pausar, /continuar, /parar,
-/volume), que não dependem de menção nem da Message Content Intent.
+(/tocar, /pular, /fila, /limpar-fila, /remover, /repetir, /pausar,
+/continuar, /parar, /volume), que não dependem de menção nem da Message
+Content Intent.
+
+Quando todo mundo sai da call, a Natty sai também (depois de
+SEGUNDOS_ANTES_DE_SAIR) — menos com o Echo escutando, que decide sozinho.
 """
 
 from __future__ import annotations
@@ -46,6 +50,31 @@ def _parar_audio(voice_client) -> None:
     getattr(voice_client, "stop_playing", voice_client.stop)()
 
 
+def _echo_escutando(voice_client) -> bool:
+    """A conexão é a do Echo (VoiceRecvClient)? Só ela tem stop_playing(). Sem importar o Echo."""
+    return hasattr(voice_client, "stop_playing")
+
+
+def _pessoas_no_canal(canal) -> int:
+    """Quantas pessoas (bots não contam) estão no canal de voz."""
+    return sum(1 for m in getattr(canal, "members", []) if not m.bot)
+
+
+def _motivo(erro: Exception) -> str:
+    """O motivo de um erro do YouTube pra mesa; vazio se não for um erro conhecido."""
+    if isinstance(erro, service.ErroDeMusica) and type(erro) is not service.ErroDeMusica:
+        return f" ({erro.motivo})"
+    return ""
+
+
+def _logar_falha(texto: str, alvo: str, erro: Exception) -> None:
+    """Erro conhecido (vídeo privado...) vira uma linha de aviso; o resto, traceback."""
+    if isinstance(erro, service.ErroDeMusica) and type(erro) is not service.ErroDeMusica:
+        log.warning("Bardo: %s %s: %s", texto, alvo, erro.motivo)
+    else:
+        log.error("Bardo: %s %s", texto, alvo, exc_info=erro)
+
+
 def _deve_ignorar(message: discord.Message, eu: discord.abc.User | None) -> bool:
     """Ignora bots (a própria Natty, o Avrae...), exceto o pedido falado que a Natty posta."""
     if not message.author.bot:
@@ -65,6 +94,8 @@ class BardoCog(commands.Cog):
         # guild.id de quem pulou/parou a música de propósito: aí uma música
         # que acabou rápido não é falha pra tentar de novo.
         self._interrompidas: set[int] = set()
+        # guild.id → espera pra sair da call vazia (cancelada se alguém volta).
+        self._saidas: dict[int, asyncio.Task] = {}
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -102,6 +133,8 @@ class BardoCog(commands.Cog):
             resposta = self._descrever_fila(guild)
         elif pedido.acao == "limpar_fila":
             resposta = self._limpar_fila(guild)
+        elif pedido.acao == "remover":
+            resposta = self._remover(guild, pedido.posicao)
         elif pedido.acao == "pausar":
             resposta = self._pausar(guild)
         elif pedido.acao == "continuar":
@@ -134,8 +167,10 @@ class BardoCog(commands.Cog):
             cargo_da_natty is not None and cargo_da_natty in message.role_mentions
         )
 
-    @app_commands.command(name="tocar", description="Toca um link do YouTube ou uma busca no dataset (ou põe na fila)")
-    @app_commands.describe(pedido="Link do YouTube, ou uma busca como: triste e bloodborne")
+    @app_commands.command(
+        name="tocar", description="Toca um link (vídeo ou playlist do YouTube) ou uma busca no dataset (ou põe na fila)"
+    )
+    @app_commands.describe(pedido="Link do YouTube (vídeo ou playlist), ou uma busca como: triste e bloodborne")
     @app_commands.guild_only()
     async def tocar(self, interaction: discord.Interaction, pedido: str):
         # Resolver o link no yt-dlp passa fácil dos 3s que o Discord dá pra responder.
@@ -162,6 +197,25 @@ class BardoCog(commands.Cog):
     @app_commands.guild_only()
     async def limpar_fila(self, interaction: discord.Interaction):
         await interaction.response.send_message(self._limpar_fila(interaction.guild))
+
+    @app_commands.command(name="remover", description="Tira uma música da fila")
+    @app_commands.describe(posicao="Posição na fila (1 = a próxima; veja em /fila)")
+    @app_commands.guild_only()
+    async def remover(self, interaction: discord.Interaction, posicao: app_commands.Range[int, 1, service.MAX_FILA]):
+        await interaction.response.send_message(self._remover(interaction.guild, posicao))
+
+    @app_commands.command(name="repetir", description="Repete a música atual ou a fila inteira")
+    @app_commands.describe(modo="O que repetir; sem escolher, liga/desliga a repetição da música atual")
+    @app_commands.choices(
+        modo=[
+            app_commands.Choice(name="a música atual", value="faixa"),
+            app_commands.Choice(name="a fila inteira", value="fila"),
+            app_commands.Choice(name="desligar", value="desligar"),
+        ]
+    )
+    @app_commands.guild_only()
+    async def repetir(self, interaction: discord.Interaction, modo: app_commands.Choice[str] | None = None):
+        await interaction.response.send_message(self._repetir(interaction.guild, _pedido_de_repetir(modo)))
 
     @app_commands.command(name="pausar", description="Pausa a música")
     @app_commands.guild_only()
@@ -196,10 +250,13 @@ class BardoCog(commands.Cog):
         """Toca `link` no canal de voz de `membro`, ou põe na fila se já tiver música. Devolve a resposta.
 
         `info` é o link já resolvido (ex: pela busca livre), pra não resolver duas vezes.
+        Link de playlist põe a playlist inteira na fila (_tocar_playlist).
         """
         voice_state = membro.voice
         if not voice_state or not voice_state.channel:
             return "Entra num canal de voz primeiro, aí eu toco."
+        if service.eh_link_de_playlist(link):
+            return await self._tocar_playlist(guild, voice_state.channel, canal_de_texto, link)
 
         canal = voice_state.channel
         self._canais_de_aviso[guild.id] = canal_de_texto
@@ -207,8 +264,10 @@ class BardoCog(commands.Cog):
         if info is None:
             try:
                 info = await asyncio.to_thread(service.resolver_musica, link)
-            except Exception:
-                log.exception("Bardo: falha ao resolver %s", link)
+            except Exception as e:
+                _logar_falha("falha ao resolver", link, e)
+                if _motivo(e):
+                    return f"Não consigo tocar essa{_motivo(e)}."
                 return "Não consegui pegar essa música. Confere o link?"
 
         musica = service.Musica(info["titulo"], link, info["duracao_segundos"])
@@ -251,8 +310,33 @@ class BardoCog(commands.Cog):
         if not musicas:
             return await self._tocar_do_youtube(guild, membro, canal_de_texto, busca)
 
-        self._canais_de_aviso[guild.id] = canal_de_texto
         aviso = f" (achei {achadas}, sorteei {len(musicas)})" if achadas > len(musicas) else ""
+        return await self._enfileirar(guild, voice_state.channel, canal_de_texto, musicas, aviso)
+
+    async def _tocar_playlist(
+        self, guild: discord.Guild, canal: discord.VoiceChannel, canal_de_texto: discord.abc.Messageable, link: str
+    ) -> str:
+        """Põe uma playlist do YouTube inteira na fila (até MAX_FILA); se nada tocava, já começa."""
+        try:
+            nome, musicas = await asyncio.to_thread(service.listar_playlist, link)
+        except Exception as e:
+            _logar_falha("falha ao ler a playlist", link, e)
+            return f"Não consegui abrir essa playlist{_motivo(e)}."
+        cabem = service.MAX_FILA - len(self._fila(guild).proximas)
+        aviso = f" (a playlist tem {len(musicas)}, só cabem {max(cabem, 0)})" if len(musicas) > cabem > 0 else ""
+        resposta = await self._enfileirar(guild, canal, canal_de_texto, musicas, aviso)
+        return f"📃 Playlist **{escape_markdown(nome)}**: {resposta}"
+
+    async def _enfileirar(
+        self,
+        guild: discord.Guild,
+        canal: discord.VoiceChannel,
+        canal_de_texto: discord.abc.Messageable,
+        musicas: list[service.Musica],
+        aviso: str = "",
+    ) -> str:
+        """Põe `musicas` no fim da fila (as que couberem); se nada tocava, já começa a primeira."""
+        self._canais_de_aviso[guild.id] = canal_de_texto
         fila = self._fila(guild)
 
         async with self._travas.setdefault(guild.id, asyncio.Lock()):
@@ -265,11 +349,11 @@ class BardoCog(commands.Cog):
             if fila.tocando is not None:
                 return f"Adicionei {entraram} música{'s' if entraram > 1 else ''} na fila{aviso} 📜"
 
-            await self._conectar(guild, voice_state.channel)
+            await self._conectar(guild, canal)
             tocando = await self._tocar_proxima(guild, avisar=False)
 
         if tocando is None:
-            return "Não consegui tocar nenhuma das músicas que achei."
+            return "Não consegui tocar nenhuma dessas músicas."
         resto = len(fila.proximas)
         complemento = f" — mais {resto} na fila" if resto else ""
         return f"Tocando **{escape_markdown(tocando.titulo)}** 🎵{complemento}{aviso}"
@@ -280,8 +364,14 @@ class BardoCog(commands.Cog):
         """Busca que não achou nada no dataset: toca o 1º resultado do YouTube e pergunta se era essa."""
         try:
             info = await asyncio.to_thread(service.resolver_por_busca_livre, busca)
-        except Exception:
-            log.exception("Bardo: falha na busca livre por %r", busca)
+        except service.NadaEncontrado:
+            # Busca sem resultado não é falha do bot: sem traceback no log.
+            log.info("Bardo: busca livre por %r não achou nada", busca)
+            return f'Não achei nada pra "{escape_markdown(busca)}", nem no dataset nem no YouTube. Tenta outros termos?'
+        except Exception as e:
+            _logar_falha("falha na busca livre por", repr(busca), e)
+            if _motivo(e):
+                return f'Achei "{escape_markdown(busca)}" no YouTube, mas não consigo tocar{_motivo(e)}.'
             return f'Não achei nada pra "{escape_markdown(busca)}", nem no dataset nem no YouTube. Tenta outros termos?'
 
         link = info["link"]
@@ -393,11 +483,13 @@ class BardoCog(commands.Cog):
                 info = await asyncio.to_thread(service.resolver_musica, musica.link)
                 self._tocar_stream(guild, voice_client, info, musica, tentativa + 1)
                 return
-            except Exception:
-                log.exception("Bardo: falha ao tentar de novo %s", musica.link)
+            except Exception as e:
+                _logar_falha("falha ao tentar de novo", musica.link, e)
 
         if mesma_musica:
             log.error("Bardo: %s não tocou nem na segunda tentativa", musica.link)
+            # Não volta pro fim da fila com o repetir da fila: falharia pra sempre.
+            self._fila(guild).descartar_atual()
             await self._avisar(guild, f"O YouTube não deixou tocar **{escape_markdown(musica.titulo)}**, pulei.")
         await self._tocar_proxima(guild)
 
@@ -439,9 +531,11 @@ class BardoCog(commands.Cog):
             try:
                 info = await asyncio.to_thread(service.resolver_musica, musica.link)
                 self._tocar_stream(guild, voice_client, info, musica)
-            except Exception:
-                log.exception("Bardo: falha ao tocar %s da fila", musica.link)
-                await self._avisar(guild, f"Não consegui tocar **{escape_markdown(musica.titulo)}**, pulei.")
+            except Exception as e:
+                _logar_falha("falha ao tocar da fila", musica.link, e)
+                # Não volta pro fim da fila com o repetir da fila: falharia pra sempre.
+                fila.descartar_atual()
+                await self._avisar(guild, f"Não consegui tocar **{escape_markdown(musica.titulo)}**{_motivo(e)}, pulei.")
                 continue
 
             if avisar:
@@ -481,9 +575,9 @@ class BardoCog(commands.Cog):
         linhas = [f"🎵 Tocando: **{escape_markdown(fila.tocando.titulo)}**{_duracao(fila.tocando)}{repetindo}"]
         proximas = fila.proximas
         if not proximas:
-            linhas.append("A fila está vazia.")
+            linhas.append("A fila está vazia." + (" 🔁 (repetindo a fila)" if fila.repetir_fila else ""))
         else:
-            linhas.append("📜 Próximas:")
+            linhas.append("📜 Próximas" + (" — 🔁 repetindo a fila:" if fila.repetir_fila else ":"))
             for i, musica in enumerate(proximas[:MUSICAS_MOSTRADAS_NA_FILA], start=1):
                 linhas.append(f"{i}. {escape_markdown(musica.titulo)}{_duracao(musica)}")
             if len(proximas) > MUSICAS_MOSTRADAS_NA_FILA:
@@ -491,16 +585,37 @@ class BardoCog(commands.Cog):
         return "\n".join(linhas)
 
     def _repetir(self, guild: discord.Guild, pedido: service.Pedido) -> str:
-        """Liga/desliga o repetir da faixa atual e diz qual estado ficou — nunca muda calado."""
+        """Liga/desliga o repetir (da faixa atual ou da fila) e diz qual estado ficou — nunca muda calado."""
         fila = self._fila(guild)
-        if fila.tocando is None and (pedido.repetir is None and not fila.repetir):
+        ligado = fila.repetir_fila if pedido.alvo == "fila" else fila.repetir
+        if fila.tocando is None and pedido.repetir is None and not ligado:
             return "Não tem nada tocando pra repetir."
-        if fila.alternar_repetir(pedido):
+        if not fila.alternar_repetir(pedido):
+            return "➡️ Repetição desligada — quando essa acabar, sigo a fila."
+        if pedido.alvo == "fila":
+            total = len(fila.proximas) + 1
             return (
-                f"🔁 Repetindo **{escape_markdown(fila.tocando.titulo)}** — quando acabar, volta do começo. "
-                "Pra parar: `@Natty para de repetir` (ou `@Natty repete` de novo)."
+                f"🔁 Repetindo a fila ({total} música{'s' if total > 1 else ''}) — cada uma que acaba volta pro fim. "
+                "Pra parar: `@Natty para de repetir`."
             )
-        return "➡️ Repetição desligada — quando essa acabar, sigo a fila."
+        return (
+            f"🔁 Repetindo **{escape_markdown(fila.tocando.titulo)}** — quando acabar, volta do começo. "
+            "Pra parar: `@Natty para de repetir` (ou `@Natty repete` de novo)."
+        )
+
+    def _remover(self, guild: discord.Guild, posicao: int | None) -> str:
+        """Tira uma música da fila pela posição (a de `@Natty fila`)."""
+        fila = self._fila(guild)
+        if not fila.proximas:
+            return "A fila está vazia, não tem o que tirar."
+        if posicao is None:
+            return "Qual delas? Fala a posição (ex: `@Natty tira a 2 da fila`); `@Natty fila` mostra os números."
+        try:
+            musica = fila.remover(posicao)
+        except service.PosicaoInvalida:
+            total = len(fila.proximas)
+            return f"A fila só tem {total} música{'s' if total > 1 else ''}; não existe a posição {posicao}."
+        return f"Tirei **{escape_markdown(musica.titulo)}** da fila 🗑️"
 
     def _limpar_fila(self, guild: discord.Guild) -> str:
         quantas = self._fila(guild).limpar()
@@ -554,6 +669,63 @@ class BardoCog(commands.Cog):
 
     def _fila(self, guild: discord.Guild) -> service.Fila:
         return self._filas.setdefault(guild.id, service.Fila())
+
+    # -- Sair sozinha da call vazia -------------------------------------------
+
+    async def cog_unload(self):
+        for guild_id in list(self._saidas):
+            self._cancelar_saida(guild_id)
+
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, membro: discord.Member, antes: discord.VoiceState, depois: discord.VoiceState):
+        """Alguém entrou/saiu de um canal: se a call da Natty esvaziou, agenda a saída; se voltou gente, cancela."""
+        if membro.bot:
+            return
+        guild = membro.guild
+        voice_client = guild.voice_client
+        if voice_client is None or voice_client.channel is None:
+            return
+        canal = voice_client.channel
+        if canal not in (antes.channel, depois.channel):
+            return
+        if service.deve_sair_do_canal(_pessoas_no_canal(canal), _echo_escutando(voice_client)):
+            if guild.id not in self._saidas:
+                self._saidas[guild.id] = asyncio.create_task(self._sair_se_continuar_vazio(guild))
+        else:
+            self._cancelar_saida(guild.id)
+
+    def _cancelar_saida(self, guild_id: int) -> None:
+        tarefa = self._saidas.pop(guild_id, None)
+        if tarefa is not None:
+            tarefa.cancel()
+
+    async def _sair_se_continuar_vazio(self, guild: discord.Guild, espera: float | None = None) -> bool:
+        """Espera um pouco e sai da call se ela continuar vazia. Devolve se saiu."""
+        try:
+            await asyncio.sleep(service.SEGUNDOS_ANTES_DE_SAIR if espera is None else espera)
+        except asyncio.CancelledError:
+            return False
+        self._saidas.pop(guild.id, None)
+        voice_client = guild.voice_client
+        if voice_client is None or voice_client.channel is None:
+            return False
+        if not service.deve_sair_do_canal(_pessoas_no_canal(voice_client.channel), _echo_escutando(voice_client)):
+            return False
+        # Como o "para": fila zerada antes, pro `after` do player não tocar a próxima.
+        self._fila(guild).resetar()
+        self._interrompidas.add(guild.id)
+        await voice_client.disconnect()
+        log.info("Bardo: saí da call vazia em %s", guild.id)
+        await self._avisar(guild, "Todo mundo saiu da call, então saí também 👋")
+        return True
+
+
+def _pedido_de_repetir(modo: app_commands.Choice[str] | None) -> service.Pedido:
+    """Opção do /repetir → Pedido("repetir")."""
+    valor = modo.value if modo else None
+    if valor == "desligar":
+        return service.Pedido("repetir", repetir=False)
+    return service.Pedido("repetir", alvo="fila" if valor == "fila" else None)
 
 
 def _duracao(musica: service.Musica) -> str:

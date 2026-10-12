@@ -51,15 +51,15 @@ Também tem `/rolar`. Mensagens começando com `!` são do Avrae, essas eu deixo
 🎵 **Bardo** — música no canal de voz
 
 Entra num canal de voz e me chama:
-• `@Natty toca <link do YouTube>` — toco a música (se já tiver uma tocando, ponho na fila)
+• `@Natty toca <link do YouTube>` — toco a música (se já tiver uma tocando, ponho na fila); link de playlist põe a playlist inteira
 • `@Natty toca triste e bloodborne` · `@Natty toca Garçom` — busco no meu acervo de trilhas (e no YouTube, se não achar)
-• `@Natty pula` — vai pra próxima · `@Natty fila` — mostra a fila · `@Natty limpa a fila`
+• `@Natty pula` — vai pra próxima · `@Natty fila` — mostra a fila · `@Natty limpa a fila` · `@Natty tira a 2 da fila`
 • `@Natty pausa` · `@Natty continua`
-• `@Natty repete` — repito a música atual até alguém pedir `@Natty para de repetir` (ou `@Natty repete` de novo)
-• `@Natty para` — paro a música e limpo a fila (continuo no canal)
+• `@Natty repete` — repito a música atual até alguém pedir `@Natty para de repetir` (ou `@Natty repete` de novo) · `@Natty repete a fila` — repito a fila inteira
+• `@Natty para` — paro a música e limpo a fila (continuo no canal; quando todo mundo sai da call, eu saio também)
 • `@Natty volume 30` · `@Natty aumenta o volume` · `@Natty abaixa`
 
-Também tem `/tocar`, `/pular`, `/fila`, `/limpar-fila`, `/pausar`, `/continuar`, `/parar` e `/volume`.""",
+Também tem `/tocar`, `/pular`, `/fila`, `/limpar-fila`, `/remover`, `/repetir`, `/pausar`, `/continuar`, `/parar` e `/volume`.""",
     "core": """\
 📜 **Core** — personagens da Crossroads
 

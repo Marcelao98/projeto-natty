@@ -7,7 +7,8 @@ nenhuma dependência de discord.py, pra qualquer outro módulo (inclusive um
 futuro módulo de LLM) poder chamar direto.
 
 "natty toca <tema>" sem link vira busca booleana no dataset local
-(dataset/musicas.json): "natty toca triste e bloodborne".
+(dataset/musicas.json): "natty toca triste e bloodborne". Link de playlist
+("youtube.com/playlist?list=...") põe a playlist inteira na fila.
 """
 
 from __future__ import annotations
@@ -23,11 +24,26 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from modules.bardo import youtube
+# Os erros do YouTube, já com o motivo pra mesa (vídeo privado, idade...).
+from modules.bardo.youtube import (  # noqa: F401 (reexportados pro cog)
+    BloqueadoNaRegiao,
+    ErroDeMusica,
+    NadaEncontrado,
+    PlaylistIndisponivel,
+    RestricaoDeIdade,
+    SoParaMembros,
+    VideoIndisponivel,
+    VideoPrivado,
+)
 
 _YOUTUBE_URL_RE = re.compile(
-    r"(https?://)?(www\.|music\.)?(youtube\.com/watch\?v=[\w-]+|youtu\.be/[\w-]+)(\S*)?",
+    r"(https?://)?(www\.|music\.|m\.)?"
+    r"(youtube\.com/watch\?v=[\w-]+|youtu\.be/[\w-]+|youtube\.com/playlist\?list=[\w-]+)(\S*)?",
     re.IGNORECASE,
 )
+# Menção do Discord (<@123>, <@!123>, <@&123>, <#123>): os dígitos do id não
+# podem virar volume ou posição na fila ("<@1234...> volume 30" virava 100%).
+_MENCAO_RE = re.compile(r"<[@#][!&]?\d+>")
 
 _TOCAR_RE = re.compile(
     r"\b(toca|toque|tocar|bota|coloca|põe|poe|play|adiciona|adicione|add)\b", re.IGNORECASE
@@ -41,6 +57,10 @@ _CONTINUAR_RE = re.compile(
 )
 _PARAR_RE = re.compile(r"\b(para|pare|parar|stop|chega|desliga|sai|sair)\b", re.IGNORECASE)
 _REPETIR_RE = re.compile(r"\b(repete|repetir|repita|loop)\b", re.IGNORECASE)
+# "repete a fila", "loop da playlist", "repete tudo": a fila inteira, não a faixa.
+_REPETIR_FILA_RE = re.compile(r"\b(fila|playlist|queue|tudo)\b", re.IGNORECASE)
+_REMOVER_RE = re.compile(r"\b(tira|tire|tirar|remove|remova|remover|retira|retire|deleta|delete)\b", re.IGNORECASE)
+_POSICAO_RE = re.compile(r"\b(\d{1,2})\b")
 # "para de repetir", "repete não", "chega de loop", "desliga o repetir".
 _DESLIGAR_REPETIR_RE = re.compile(r"\b(n[ãa]o|para|pare|parar|chega|desliga|tira)\b", re.IGNORECASE)
 _VOLUME_RE = re.compile(r"\bvolume\b", re.IGNORECASE)
@@ -58,6 +78,10 @@ FFMPEG_OPTIONS = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
     "options": "-vn",
 }
+
+# Sair sozinha da call: quanto tempo o canal fica sem ninguém antes de a
+# Natty sair (dá tempo de quem caiu da call voltar).
+SEGUNDOS_ANTES_DE_SAIR = 60
 
 # Música que "acaba" antes disso sem ninguém pular não tocou de verdade: o
 # YouTube às vezes recusa a URL de áudio (403) e o FFmpeg sai sem som.
@@ -84,8 +108,9 @@ class Pedido:
     """O que pediram pra Natty fazer com a música.
 
     acao: "tocar", "pausar", "continuar", "parar", "volume", "pular", "fila",
-        "limpar_fila" ou "repetir".
-    link: só em "tocar"; None se pediram pra tocar sem mandar link.
+        "limpar_fila", "repetir" ou "remover".
+    link: só em "tocar"; None se pediram pra tocar sem mandar link. Pode ser
+        de vídeo ou de playlist (eh_link_de_playlist).
     busca: só em "tocar" sem link; o que vem depois do verbo ("triste e
         bloodborne"), pra buscar_musicas(). None se não sobrou nada.
     volume: só em "volume"; valor absoluto (0-100) pedido.
@@ -93,6 +118,10 @@ class Pedido:
     Em "volume" sem número nem direção, os dois ficam None (é pergunta).
     repetir: só em "repetir"; False = desligar ("para de repetir", "repete
         não"), None = alternar ("natty repete" liga, de novo desliga).
+    alvo: só em "repetir"; "fila" = a fila inteira ("repete a fila"), None =
+        a faixa atual.
+    posicao: só em "remover"; posição na fila (1 = a próxima). None se não
+        disseram qual.
     """
 
     acao: str
@@ -101,6 +130,8 @@ class Pedido:
     volume: int | None = None
     delta_volume: int | None = None
     repetir: bool | None = None
+    alvo: str | None = None
+    posicao: int | None = None
 
 
 def interpretar_pedido(texto: str) -> Pedido | None:
@@ -110,12 +141,20 @@ def interpretar_pedido(texto: str) -> Pedido | None:
     menção de verdade (@Natty ou o cargo). Escrever só "natty" não basta.
     """
     link = extrair_link_youtube(texto)
-    # O link sai antes das outras regras: "para" ou "volta" dentro de uma
-    # URL não pode virar comando.
-    sem_link = _YOUTUBE_URL_RE.sub(" ", texto)
+    # O link e as menções saem antes das outras regras: "para" ou "volta"
+    # dentro de uma URL não pode virar comando, nem o id de uma menção virar
+    # volume.
+    sem_link = _MENCAO_RE.sub(" ", _YOUTUBE_URL_RE.sub(" ", texto))
 
     if link and _TOCAR_RE.search(sem_link):
         return Pedido("tocar", link=link)
+    # Remover antes de fila: "natty tira a 3 da fila" não é "mostra a fila".
+    # Só com número ou "fila" na frase: "tira" solto é conversa.
+    remover = _REMOVER_RE.search(sem_link)
+    if remover and not _REPETIR_RE.search(sem_link):
+        posicao = _POSICAO_RE.search(sem_link)
+        if posicao or _FILA_RE.search(sem_link):
+            return Pedido("remover", posicao=int(posicao.group(1)) if posicao else None)
     # Fila antes de parar/tocar: "natty limpa a fila" não é "para", e
     # "natty toca a próxima" é pular, não pedido sem link.
     if _FILA_RE.search(sem_link) and _LIMPAR_RE.search(sem_link):
@@ -126,7 +165,13 @@ def interpretar_pedido(texto: str) -> Pedido | None:
     tocar_antes = _TOCAR_RE.search(sem_link)
     if repetir and not (tocar_antes and tocar_antes.start() < repetir.start()):
         desligar = _DESLIGAR_REPETIR_RE.search(sem_link)
-        return Pedido("repetir", repetir=False if desligar else None)
+        alvo = "fila" if _REPETIR_FILA_RE.search(sem_link) else None
+        return Pedido("repetir", repetir=False if desligar else None, alvo=alvo)
+    # Título com cara de comando ("toca Volta pra Casa", "toca Próxima
+    # Parada"): quando o verbo de tocar vem antes de tudo, é busca.
+    busca = _busca_quando_tocar_vem_primeiro(sem_link)
+    if busca is not None:
+        return Pedido("tocar", busca=busca or None)
     if _PULAR_RE.search(sem_link):
         return Pedido("pular")
     if _FILA_RE.search(sem_link):
@@ -152,8 +197,39 @@ def interpretar_pedido(texto: str) -> Pedido | None:
         # A menção (<@id>) e o nome da Natty vêm antes do verbo, então o que
         # sobra depois dele é só a busca.
         busca = sem_link[tocar.end():].strip(" \t\n,.!?:;")
+        busca = _NA_FILA_RE.sub("", busca).strip(" \t\n,.!?:;")
         return Pedido("tocar", busca=busca or None)
     return None
+
+
+# O que vem depois de "toca"/"coloca" que é comando, não título: "toca a
+# próxima" é pular (mas "toca Próxima Parada" é busca), "coloca o volume em 30" é volume, "bota mais alto".
+_RESTO_QUE_E_COMANDO_RE = re.compile(
+    r"^(a\s+|o\s+)?(pr[oó]xima(\s+m[uú]sica|\s+faixa)?$|volume\b|mais alto\b|mais baixo\b)", re.IGNORECASE
+)
+# "natty adiciona na fila Garçom": o "na fila" não faz parte da busca.
+_NA_FILA_RE = re.compile(r"^(na|a|à|pra|para)\s+(fila|playlist)\b\s*", re.IGNORECASE)
+_CONTROLES_RE = (_PULAR_RE, _FILA_RE, _VOLUME_RE, _AUMENTAR_RE, _DIMINUIR_RE, _PAUSAR_RE, _CONTINUAR_RE)
+
+
+def _busca_quando_tocar_vem_primeiro(texto: str) -> str | None:
+    """A busca de "toca <título>" quando o título tem palavra de comando; None se não for o caso.
+
+    "natty toca Volta pra Casa" → "Volta pra Casa" (antes virava continuar).
+    Só vale quando "toca" vem antes de qualquer palavra de comando; "natty
+    volta a tocar" continua sendo continuar. Devolve "" se sobrou só "na fila".
+    """
+    tocar = _TOCAR_RE.search(texto)
+    if tocar is None:
+        return None
+    controles = [m.start() for r in _CONTROLES_RE if (m := r.search(texto))]
+    if not controles or min(controles) < tocar.start():
+        return None
+    resto = texto[tocar.end():].strip(" \t\n,.!?:;")
+    resto = _NA_FILA_RE.sub("", resto).strip(" \t\n,.!?:;")
+    if _RESTO_QUE_E_COMANDO_RE.match(resto):
+        return None
+    return resto
 
 
 _PARA_DE_RE = re.compile(r"^\s+de\s+(\w+)", re.IGNORECASE)
@@ -203,24 +279,46 @@ class FilaCheia(Exception):
     pass
 
 
+class PosicaoInvalida(IndexError):
+    """Pediram pra tirar uma posição que a fila não tem."""
+
+
 class Fila:
     """A música tocando e as que esperam a vez, de um servidor.
 
     Só guarda estado; quem toca de verdade (cog.py) chama avancar() quando
     uma música acaba — ou, com `repetir` ligado, toca a mesma de novo
-    (deve_repetir).
+    (deve_repetir). Com `repetir_fila` ligado, a que sai vai pro fim da fila.
     """
 
     def __init__(self):
         self.tocando: Musica | None = None
         self._proximas: deque[Musica] = deque()
-        # Repetir a faixa ATUAL (não a fila): quando ela acaba sozinha, volta
-        # do começo em vez de avançar. Pular e parar desligam.
+        # Repetir a faixa ATUAL: quando ela acaba sozinha, volta do começo em
+        # vez de avançar. Pular e parar desligam.
         self.repetir: bool = False
+        # Repetir a FILA inteira: cada música que sai volta pro fim. Pular não
+        # desliga (pular numa playlist em loop é normal); parar desliga. Um
+        # repetir liga e o outro desliga.
+        self.repetir_fila: bool = False
 
     def alternar_repetir(self, pedido: Pedido) -> bool:
-        """Aplica um Pedido("repetir") e devolve o estado novo (None = alternar, False = desligar)."""
+        """Aplica um Pedido("repetir") e devolve o estado novo do que foi pedido.
+
+        `pedido.repetir`: None = alternar, False = desligar (desliga os dois).
+        `pedido.alvo`: "fila" = repetir a fila inteira; None = a faixa atual.
+        """
+        if pedido.repetir is False:
+            self.repetir = self.repetir_fila = False
+            return False
+        if pedido.alvo == "fila":
+            self.repetir_fila = not self.repetir_fila if pedido.repetir is None else pedido.repetir
+            if self.repetir_fila:
+                self.repetir = False
+            return self.repetir_fila
         self.repetir = (not self.repetir) if pedido.repetir is None else pedido.repetir
+        if self.repetir:
+            self.repetir_fila = False
         return self.repetir
 
     def deve_repetir(self, musica: Musica) -> bool:
@@ -246,9 +344,27 @@ class Fila:
         return len(entram)
 
     def avancar(self) -> Musica | None:
-        """Passa pra próxima música (que vira a `tocando`) e a devolve; None se acabou."""
+        """Passa pra próxima música (que vira a `tocando`) e a devolve; None se acabou.
+
+        Com repetir_fila, a que estava tocando volta pro fim antes: uma fila
+        de uma música só fica repetindo ela.
+        """
+        if self.repetir_fila and self.tocando is not None:
+            self._proximas.append(self.tocando)
         self.tocando = self._proximas.popleft() if self._proximas else None
         return self.tocando
+
+    def descartar_atual(self) -> None:
+        """Tira a atual sem devolver pro fim (ela não tocou: com repetir_fila, falharia de novo pra sempre)."""
+        self.tocando = None
+
+    def remover(self, posicao: int) -> Musica:
+        """Tira a música da `posicao` (1 = a próxima) e a devolve. PosicaoInvalida se não existir."""
+        if not 1 <= posicao <= len(self._proximas):
+            raise PosicaoInvalida(posicao)
+        musica = self._proximas[posicao - 1]
+        del self._proximas[posicao - 1]
+        return musica
 
     def limpar(self) -> int:
         """Tira as músicas que esperam (a atual continua). Devolve quantas saíram."""
@@ -257,10 +373,20 @@ class Fila:
         return quantas
 
     def resetar(self) -> None:
-        """Esvazia tudo, inclusive a atual (e desliga o repetir)."""
+        """Esvazia tudo, inclusive a atual (e desliga os dois repetir)."""
         self.limpar()
         self.tocando = None
         self.repetir = False
+        self.repetir_fila = False
+
+
+def deve_sair_do_canal(pessoas_no_canal: int, echo_escutando: bool) -> bool:
+    """A Natty sai sozinha da call? Só se não sobrou ninguém (bots não contam).
+
+    Com o Echo escutando, quem decide a saída é o Echo ("NAT20, por favor,
+    saia"): o Bardo não derruba a escuta de ninguém.
+    """
+    return pessoas_no_canal == 0 and not echo_escutando
 
 
 # ---------------------------------------------------------------------------
@@ -475,9 +601,28 @@ def buscar_musicas(
 
 
 def extrair_link_youtube(texto: str) -> str | None:
-    """Extrai a primeira URL de YouTube encontrada no texto, ou None."""
+    """Extrai a primeira URL de YouTube (vídeo ou playlist) encontrada no texto, ou None."""
     m = _YOUTUBE_URL_RE.search(texto)
     return m.group(0) if m else None
+
+
+def eh_link_de_playlist(link: str) -> bool:
+    """Link de playlist ("youtube.com/playlist?list=...")?
+
+    Link de vídeo com "&list=" (vídeo aberto dentro de uma playlist) continua
+    sendo só aquele vídeo: é o que a pessoa estava vendo quando copiou.
+    """
+    return "/playlist?" in link.lower()
+
+
+def listar_playlist(link: str) -> tuple[str, list[Musica]]:
+    """Os vídeos de uma playlist do YouTube, já como Musica da fila: (nome da playlist, músicas).
+
+    PlaylistIndisponivel se não existir ou for privada; NadaEncontrado se vazia.
+    O áudio de cada uma é resolvido só na hora de tocar.
+    """
+    info = youtube.listar_playlist(link)
+    return info["titulo"], [Musica(i["titulo"], i["link"], i["duracao_segundos"]) for i in info["itens"]]
 
 
 def resolver_musica(url: str) -> dict:
@@ -485,6 +630,7 @@ def resolver_musica(url: str) -> dict:
 
     Retorna {"titulo": str, "stream_url": str, "duracao_segundos": int|None,
     "http_headers": dict} — os headers vão pro FFmpeg via opcoes_ffmpeg().
+    Levanta ErroDeMusica (VideoPrivado, RestricaoDeIdade...) com o motivo.
     """
     return youtube.resolver_stream(url)
 
@@ -529,7 +675,8 @@ def resolver_por_busca_livre(texto: str) -> dict:
     """Busca `texto` no YouTube e resolve o primeiro resultado em algo tocável.
 
     Mesmo retorno de resolver_musica(), mais "link" (o link de watch, que
-    não expira — é ele que vai pro dataset). LookupError se não achar nada.
+    não expira — é ele que vai pro dataset). NadaEncontrado (que também é
+    LookupError) se não achar nada.
     """
     return youtube.buscar_stream(texto)
 

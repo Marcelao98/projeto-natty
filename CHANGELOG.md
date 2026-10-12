@@ -1,5 +1,18 @@
 # Changelog
 
+## Bardo, etapa 1: fila completa - 2026-10-12
+
+- **Playlist do YouTube**: `@Natty toca <link da playlist>` (ou `/tocar`) põe a playlist inteira na fila (até 50), pulando vídeos privados/apagados. Link de vídeo com `&list=` continua tocando só o vídeo.
+- **Remover da fila**: `@Natty tira a 3 da fila` e `/remover posicao:3`.
+- **Repetir a fila inteira**: `@Natty repete a fila` / `loop da playlist` / `repete tudo`. Um repetir desliga o outro; pular não desliga o da fila; música que falha não volta pro fim (senão falharia em loop).
+- **`/repetir`** com `modo` (a música atual, a fila inteira, desligar).
+- **Sair da call vazia**: 60 s depois da última pessoa sair, a Natty para, limpa a fila e sai. Não sai quando a conexão é do Echo (quem decide lá é o Echo).
+- **Erros com motivo**: `youtube.py` traduz o yt-dlp em `VideoPrivado`, `RestricaoDeIdade`, `SoParaMembros`, `BloqueadoNaRegiao`, `VideoIndisponivel`, `PlaylistIndisponivel`, `NadaEncontrado`. A mesa vê o motivo; busca sem resultado não gera mais traceback.
+- **Correções**: `@Natty toca Volta pra Casa` / `Próxima Parada` agora é busca (o verbo de tocar vindo primeiro manda); `@Natty volume 30` ia pra 100% porque os dígitos do id da menção viravam o número; `@Natty adiciona na fila Garçom` não busca mais "na fila Garçom".
+- O bug do "era essa?" aceitando qualquer mensagem já estava corrigido desde 02/10 (só reply); só o README estava desatualizado.
+- Socorro e READMEs atualizados.
+- Testes: Bardo 135 (eram 91), Echo 125, Dice, Socorro e Core sem mudança.
+
 ## Projeto Natty público - 2026-10-06
 
 - Repositório publicado como **Projeto Natty**, com histórico novo. Nomes e usuários reais de jogadores nos testes, exemplos e no changelog foram trocados por nomes fictícios.

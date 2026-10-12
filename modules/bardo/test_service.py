@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
@@ -41,6 +42,10 @@ from modules.bardo.service import (  # noqa: E402
     montar_vocabulario,
     novo_volume,
     opcoes_ffmpeg,
+    PosicaoInvalida,
+    deve_sair_do_canal,
+    eh_link_de_playlist,
+    listar_playlist,
 )
 
 LINK = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
@@ -562,6 +567,159 @@ class OpcoesFFmpeg(unittest.TestCase):
         self.assertEqual(
             args[args.index("-headers") + 1], "User-Agent: Mozilla/5.0 (X11; Linux) Firefox/1.0\r\nAccept: */*\r\n"
         )
+
+
+class MencaoNaoViraNumero(unittest.TestCase):
+    """O id da menção (<@1234...>) não pode virar volume nem posição — "@Natty volume 30" ia pra 100%."""
+
+    def test_volume_com_mencao(self):
+        self.assertEqual(interpretar_pedido("<@123456789012345678> volume 30"), Pedido("volume", volume=30))
+        self.assertEqual(interpretar_pedido("<@&987654321> volume 10"), Pedido("volume", volume=10))
+
+    def test_remover_com_mencao(self):
+        self.assertEqual(interpretar_pedido("<@123456789012345678> tira a 2 da fila"), Pedido("remover", posicao=2))
+
+
+class TituloComCaraDeComando(unittest.TestCase):
+    """"toca Volta pra Casa" é busca, não continuar: quando "toca" vem antes, é título."""
+
+    def test_vira_busca(self):
+        casos = {
+            "natty toca Volta pra Casa": "Volta pra Casa",
+            "natty toca Próxima Parada": "Próxima Parada",
+            "<@1> toca Pausa Dramática": "Pausa Dramática",
+            "natty bota fila de espera": "fila de espera",
+            "natty toca Aumenta o Som": "Aumenta o Som",
+        }
+        for texto, busca in casos.items():
+            with self.subTest(texto=texto):
+                self.assertEqual(interpretar_pedido(texto), Pedido("tocar", busca=busca))
+
+    def test_comandos_continuam_iguais(self):
+        casos = {
+            "natty volta a tocar": "continuar",
+            "natty toca a próxima": "pular",
+            "natty toca a próxima música": "pular",
+            "natty coloca o volume em 30": "volume",
+            "natty toca mais alto": "volume",
+            "natty pausa": "pausar",
+            "natty mostra a fila": "fila",
+        }
+        for texto, acao in casos.items():
+            with self.subTest(texto=texto):
+                self.assertEqual(interpretar_pedido(texto).acao, acao)
+
+    def test_na_fila_nao_entra_na_busca(self):
+        self.assertEqual(interpretar_pedido("natty adiciona na fila Garçom"), Pedido("tocar", busca="Garçom"))
+        self.assertEqual(interpretar_pedido("natty coloca na fila"), Pedido("tocar"))
+
+
+class Remover(unittest.TestCase):
+    def test_pedidos(self):
+        for texto, posicao in [("natty tira a 3 da fila", 3), ("natty remove 2", 2), ("natty retira a música 10", 10),
+                               ("natty tira da fila", None)]:
+            with self.subTest(texto=texto):
+                self.assertEqual(interpretar_pedido(texto), Pedido("remover", posicao=posicao))
+
+    def test_tira_solto_nao_e_remover(self):
+        self.assertIsNone(interpretar_pedido("natty tira uma foto"))
+        self.assertEqual(interpretar_pedido("natty tira o loop"), Pedido("repetir", repetir=False))
+
+    def test_fila_remove_pela_posicao(self):
+        fila = Fila()
+        fila.tocando = _musica(0)
+        for n in (1, 2, 3):
+            fila.adicionar(_musica(n))
+        self.assertEqual(fila.remover(2), _musica(2))
+        self.assertEqual(fila.proximas, (_musica(1), _musica(3)))
+        self.assertEqual(fila.tocando, _musica(0))
+
+    def test_posicao_que_nao_existe(self):
+        fila = Fila()
+        fila.adicionar(_musica(1))
+        for posicao in (0, 2, 99):
+            with self.subTest(posicao=posicao), self.assertRaises(PosicaoInvalida):
+                fila.remover(posicao)
+
+
+class RepetirFila(unittest.TestCase):
+    def test_pedidos(self):
+        for texto in ["natty repete a fila", "natty loop da playlist", "natty repete tudo", "natty repetir a fila"]:
+            with self.subTest(texto=texto):
+                self.assertEqual(interpretar_pedido(texto), Pedido("repetir", alvo="fila"))
+        self.assertEqual(interpretar_pedido("natty para de repetir a fila"),
+                         Pedido("repetir", repetir=False, alvo="fila"))
+
+    def test_quem_sai_volta_pro_fim(self):
+        fila = Fila()
+        fila.adicionar_varias([_musica(1), _musica(2)])
+        fila.alternar_repetir(Pedido("repetir", alvo="fila"))
+        tocadas = [fila.avancar() for _ in range(5)]
+        self.assertEqual(tocadas, [_musica(1), _musica(2), _musica(1), _musica(2), _musica(1)])
+
+    def test_uma_musica_so_fica_repetindo(self):
+        fila = Fila()
+        fila.adicionar(_musica(1))
+        fila.alternar_repetir(Pedido("repetir", alvo="fila"))
+        self.assertEqual([fila.avancar() for _ in range(3)], [_musica(1)] * 3)
+
+    def test_descartada_nao_volta(self):
+        fila = Fila()
+        fila.adicionar_varias([_musica(1), _musica(2)])
+        fila.alternar_repetir(Pedido("repetir", alvo="fila"))
+        fila.avancar()
+        fila.descartar_atual()  # a 1 não tocou (vídeo privado...)
+        self.assertEqual([fila.avancar() for _ in range(3)], [_musica(2)] * 3)
+
+    def test_um_repetir_desliga_o_outro(self):
+        fila = Fila()
+        fila.alternar_repetir(Pedido("repetir", alvo="fila"))
+        fila.alternar_repetir(Pedido("repetir"))
+        self.assertTrue(fila.repetir)
+        self.assertFalse(fila.repetir_fila)
+        fila.alternar_repetir(Pedido("repetir", alvo="fila"))
+        self.assertTrue(fila.repetir_fila)
+        self.assertFalse(fila.repetir)
+
+    def test_desligar_desliga_os_dois_e_resetar_tambem(self):
+        fila = Fila()
+        fila.alternar_repetir(Pedido("repetir", alvo="fila"))
+        self.assertFalse(fila.alternar_repetir(Pedido("repetir", repetir=False)))
+        self.assertFalse(fila.repetir_fila)
+        fila.alternar_repetir(Pedido("repetir", alvo="fila"))
+        fila.resetar()
+        self.assertFalse(fila.repetir_fila)
+
+
+class Playlist(unittest.TestCase):
+    PLAYLIST = "https://www.youtube.com/playlist?list=PLabc-123"
+
+    def test_link_de_playlist_vira_tocar(self):
+        self.assertEqual(interpretar_pedido(f"natty toca {self.PLAYLIST}"), Pedido("tocar", link=self.PLAYLIST))
+
+    def test_so_link_de_playlist_e_playlist(self):
+        self.assertTrue(eh_link_de_playlist(self.PLAYLIST))
+        self.assertFalse(eh_link_de_playlist(LINK))
+        # Vídeo aberto dentro de uma playlist: só o vídeo, como antes.
+        self.assertFalse(eh_link_de_playlist(f"{LINK}&list=PLabc"))
+
+    def test_listar_vira_musicas(self):
+        bruto = {"titulo": "Taverna", "itens": [
+            {"titulo": "A", "link": "https://www.youtube.com/watch?v=a", "duracao_segundos": 60},
+            {"titulo": "B", "link": "https://www.youtube.com/watch?v=b", "duracao_segundos": None},
+        ]}
+        with mock.patch("modules.bardo.youtube.listar_playlist", return_value=bruto):
+            nome, musicas = listar_playlist(self.PLAYLIST)
+        self.assertEqual(nome, "Taverna")
+        self.assertEqual(musicas, [Musica("A", "https://www.youtube.com/watch?v=a", 60),
+                                   Musica("B", "https://www.youtube.com/watch?v=b", None)])
+
+
+class SairDoCanal(unittest.TestCase):
+    def test_so_sai_vazio_e_sem_o_echo(self):
+        self.assertTrue(deve_sair_do_canal(0, echo_escutando=False))
+        self.assertFalse(deve_sair_do_canal(1, echo_escutando=False))
+        self.assertFalse(deve_sair_do_canal(0, echo_escutando=True))
 
 
 if __name__ == "__main__":
