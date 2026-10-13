@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from types import SimpleNamespace
 
 import discord
 from discord.utils import escape_markdown
@@ -117,7 +118,8 @@ class MotorBardo:
             return await self._tocar_playlist(guild, voice_state.channel, canal_de_texto, link)
 
         canal = voice_state.channel
-        self._canais_de_aviso[guild.id] = canal_de_texto
+        if canal_de_texto is not None:  # pedido do painel não tem canal de texto
+            self._canais_de_aviso[guild.id] = canal_de_texto
 
         if info is None:
             try:
@@ -213,7 +215,8 @@ class MotorBardo:
         aviso: str = "",
     ) -> str:
         """Põe `musicas` no fim da fila (as que couberem); se nada tocava, já começa a primeira."""
-        self._canais_de_aviso[guild.id] = canal_de_texto
+        if canal_de_texto is not None:  # pedido do painel não tem canal de texto
+            self._canais_de_aviso[guild.id] = canal_de_texto
         fila = self._fila(guild)
 
         async with self._travas.setdefault(guild.id, asyncio.Lock()):
@@ -258,6 +261,8 @@ class MotorBardo:
         entrou = any(m.link == link for m in (fila.tocando, *fila.proximas) if m is not None)
         if not entrou:  # não conseguiu tocar nem enfileirar: não tem o que perguntar
             return resposta
+        if canal_de_texto is None:  # pedido do painel: não tem onde perguntar "era essa?"
+            return f"Não achei no dataset, mas achei no YouTube. {resposta}"
 
         service.criar_pendencia(guild.id, info["titulo"], link, canal_id=getattr(canal_de_texto, "id", None))
         return (
@@ -438,7 +443,7 @@ class MotorBardo:
         """Liga/desliga o repetir (da faixa atual ou da fila) e diz qual estado ficou — nunca muda calado."""
         fila = self._fila(guild)
         ligado = fila.repetir_fila if pedido.alvo == "fila" else fila.repetir
-        if fila.tocando is None and pedido.repetir is None and not ligado:
+        if fila.tocando is None and pedido.repetir is not False and not ligado:
             return "Não tem nada tocando pra repetir."
         ligou = fila.alternar_repetir(pedido)
         self._notificar(guild.id)
@@ -603,3 +608,104 @@ class ControleBardo:
             "volume": motor._volume(guild),
             "max_fila": service.MAX_FILA,
         }
+
+    # Comandos que o painel manda: nome → (precisa de quê, o que faz).
+    COMANDOS = ("tocar", "pular", "pausar", "continuar", "parar", "volume", "repetir", "remover",
+                "limpar_fila", "tocar_playlist", "salvar_playlist", "playlists")
+
+    async def executar(self, guild, membro, comando: str, args: dict) -> dict:
+        """Roda um comando do painel pelo MESMO caminho do Discord. {"ok", "texto", "dados"?}.
+
+        Quem chama já conferiu origem/sessão/membro; aqui só o que é regra do
+        Bardo: comandar pede o cargo de mestre. Argumentos são validados aqui
+        (vêm de fora).
+        """
+        if not self.pode_controlar(membro):
+            return {"ok": False, "texto": f"Comandar a música pede o cargo {service.cargo_mestre()}."}
+        if comando not in self.COMANDOS:
+            return {"ok": False, "texto": "Comando desconhecido."}
+        args = args if isinstance(args, dict) else {}
+        motor = self._motor
+        try:
+            if comando == "tocar":
+                texto = _texto(args.get("pedido"), 300)
+                if not texto:
+                    return {"ok": False, "texto": "Manda um link ou uma busca."}
+                return {"ok": True, "texto": await self._tocar(guild, membro, texto)}
+            if comando == "pular":
+                return {"ok": True, "texto": motor._pular(guild)}
+            if comando == "pausar":
+                return {"ok": True, "texto": motor._pausar(guild)}
+            if comando == "continuar":
+                return {"ok": True, "texto": motor._continuar(guild)}
+            if comando == "parar":
+                return {"ok": True, "texto": await motor._parar(guild)}
+            if comando == "limpar_fila":
+                return {"ok": True, "texto": motor._limpar_fila(guild)}
+            if comando == "volume":
+                nivel = _inteiro(args.get("nivel"), 0, 100)
+                if nivel is None:
+                    return {"ok": False, "texto": "Volume vai de 0 a 100."}
+                return {"ok": True, "texto": motor._mudar_volume(guild, service.Pedido("volume", volume=nivel))}
+            if comando == "repetir":
+                modo = args.get("modo")
+                if modo not in ("faixa", "fila", "desligar"):
+                    return {"ok": False, "texto": "Repetir: faixa, fila ou desligar."}
+                pedido = (service.Pedido("repetir", repetir=False) if modo == "desligar"
+                          else service.Pedido("repetir", repetir=True, alvo="fila" if modo == "fila" else None))
+                return {"ok": True, "texto": motor._repetir(guild, pedido)}
+            if comando == "remover":
+                posicao = _inteiro(args.get("posicao"), 1, service.MAX_FILA)
+                if posicao is None:
+                    return {"ok": False, "texto": "Posição inválida."}
+                return {"ok": True, "texto": motor._remover(guild, posicao)}
+            if comando == "playlists":
+                dados = await asyncio.to_thread(service.listar_playlists, guild.id)
+                return {"ok": True, "texto": "", "dados": [{"nome": p["nome"], "quantas": p["quantas"]} for p in dados]}
+            if comando == "salvar_playlist":
+                fila = motor._fila(guild)
+                musicas = [m for m in (fila.tocando, *fila.proximas) if m is not None]
+                nome, quantas = await asyncio.to_thread(
+                    service.salvar_playlist, guild.id, _texto(args.get("nome"), 100), musicas, membro.id,
+                    bool(args.get("substituir")),
+                )
+                return {"ok": True, "texto": f"Salvei a playlist {nome} ({quantas} músicas)."}
+            # tocar_playlist
+            canal = self._canal_de_voz(guild, membro)
+            if canal is None:
+                return {"ok": False, "texto": "Entra num canal de voz (ou chama a Natty pra um) primeiro."}
+            nome, musicas = await asyncio.to_thread(service.carregar_playlist, guild.id, _texto(args.get("nome"), 100))
+            return {"ok": True, "texto": f"Playlist {nome}: " + await motor._enfileirar(guild, canal, None, musicas)}
+        except service.ErroDeColecao as e:
+            return {"ok": False, "texto": str(e).replace("**", "")}
+
+    def _canal_de_voz(self, guild, membro):
+        """Onde tocar um pedido do painel: a call em que a Natty já está; senão a de quem pediu."""
+        voice_client = guild.voice_client
+        if voice_client is not None and voice_client.is_connected():
+            return voice_client.channel
+        return getattr(getattr(membro, "voice", None), "channel", None)
+
+    async def _tocar(self, guild, membro, texto: str) -> str:
+        """Link ou busca, igual ao /tocar. Quem pediu pelo painel pode não estar na call: usa a da Natty."""
+        canal = self._canal_de_voz(guild, membro)
+        if canal is None:
+            return "Entra num canal de voz (ou chama a Natty pra um) primeiro."
+        pedinte = SimpleNamespace(voice=SimpleNamespace(channel=canal), id=membro.id)
+        link = service.extrair_link(texto)
+        if link:
+            resposta = await self._motor._tocar(guild, pedinte, None, link)
+        else:
+            resposta = await self._motor._tocar_busca(guild, pedinte, None, texto)
+        return resposta.replace("**", "")
+
+
+def _texto(valor, limite: int) -> str:
+    return valor.strip()[:limite] if isinstance(valor, str) else ""
+
+
+def _inteiro(valor, minimo: int, maximo: int) -> int | None:
+    if isinstance(valor, bool) or not isinstance(valor, (int, float)) or valor != int(valor):
+        return None
+    valor = int(valor)
+    return valor if minimo <= valor <= maximo else None

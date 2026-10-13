@@ -411,5 +411,51 @@ class TestControleDoPainel(unittest.TestCase):
         self.assertFalse(self.controle.pode_controlar(viajante))
 
 
+class TestComandosDoPainel(TestControleDoPainel):
+    """ControleBardo.executar: mesmo caminho do Discord, com argumentos validados."""
+
+    def setUp(self):
+        super().setUp()
+        self.mestre = SimpleNamespace(id=7, guild=SimpleNamespace(owner_id=7), roles=[], voice=None)
+        self.c._fila(self.guild).tocando = cog.service.Musica("Garçom", "https://youtu.be/a")
+
+    def executar(self, comando, args=None, membro=None):
+        return asyncio.run(self.controle.executar(self.guild, membro or self.mestre, comando, args or {}))
+
+    def test_sem_cargo_recusa(self):
+        viajante = SimpleNamespace(id=9, guild=SimpleNamespace(owner_id=7), roles=[])
+        self.assertFalse(self.executar("pular", membro=viajante)["ok"])
+
+    def test_volume(self):
+        self.assertTrue(self.executar("volume", {"nivel": 30})["ok"])
+        self.assertEqual(self.c._volume(self.guild), 30)
+        for ruim in (101, -1, "30", 2.5, True, None):
+            with self.subTest(nivel=ruim):
+                self.assertFalse(self.executar("volume", {"nivel": ruim})["ok"])
+
+    def test_repetir_liga_explicito(self):
+        self.assertTrue(self.executar("repetir", {"modo": "fila"})["ok"])
+        self.assertTrue(self.c._fila(self.guild).repetir_fila)
+        self.executar("repetir", {"modo": "fila"})  # ligar de novo continua ligado (não alterna)
+        self.assertTrue(self.c._fila(self.guild).repetir_fila)
+        self.executar("repetir", {"modo": "desligar"})
+        self.assertFalse(self.c._fila(self.guild).repetir_fila)
+        self.assertFalse(self.executar("repetir", {"modo": "tudo"})["ok"])
+
+    def test_remover_e_desconhecido(self):
+        self.assertFalse(self.executar("remover", {"posicao": 0})["ok"])
+        self.assertFalse(self.executar("apagar_tudo")["ok"])
+        self.assertFalse(self.executar("tocar", {"pedido": "   "})["ok"])
+
+    def test_tocar_usa_a_call_da_natty(self):
+        tocar = mock.patch.object(self.c, "_tocar_busca", new=mock.AsyncMock(return_value="Tocando **X** 🎵")).start()
+        self.addCleanup(mock.patch.stopall)
+        resultado = self.executar("tocar", {"pedido": "taverna"})
+        self.assertEqual(resultado["texto"], "Tocando X 🎵")
+        pedinte = tocar.await_args.args[1]
+        self.assertIs(pedinte.voice.channel, self.conexao.channel)
+        self.assertIsNone(tocar.await_args.args[2])  # sem canal de texto
+
+
 if __name__ == "__main__":
     unittest.main()

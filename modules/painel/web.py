@@ -11,7 +11,7 @@ Rotas:
   GET  /api/me                quem está logado
   GET  /api/guilds            servidores em comum com a Natty (+ se pode controlar)
   GET  /ws?guild=<id>         WebSocket: estado do Bardo ao vivo
-  POST /api/g/{id}/cmd        comando pro Bardo (etapa 5)
+  POST /api/g/{id}/cmd        comando pro Bardo (o WebSocket aceita os mesmos)
 
 Autorização é conferida AO VIVO no bot (membro do servidor; cargo de mestre
 pra comandar) a cada requisição e a cada mensagem do WebSocket — a lista de
@@ -200,8 +200,29 @@ async def _cmd(request):
 
 
 async def _executar(request, guild, membro, dados) -> dict:
-    """Comando vindo do painel (POST ou WebSocket). Na etapa 4 o painel é só leitura."""
-    return {"ok": False, "texto": "O painel ainda é só leitura.", "_status": 403}
+    """Comando vindo do painel (POST ou WebSocket) → controle do módulo. Só valida o formato.
+
+    {"cmd": "volume", "args": {"nivel": 30}, "modulo": "bardo"}; o módulo
+    confere o cargo e os argumentos (é regra dele).
+    """
+    if not isinstance(dados, dict) or not isinstance(dados.get("cmd"), str):
+        return {"ok": False, "texto": "Comando inválido.", "_status": 400}
+    modulo = dados.get("modulo") or "bardo"
+    if not isinstance(modulo, str):
+        return {"ok": False, "texto": "Comando inválido.", "_status": 400}
+    controle = _controle(request, modulo)
+    if controle is None:
+        return {"ok": False, "texto": "Esse módulo não está carregado.", "_status": 404}
+    if not controle.pode_controlar(membro):
+        return {"ok": False, "texto": "Comandar pede o cargo de mestre.", "_status": 403}
+    try:
+        resultado = await controle.executar(guild, membro, dados["cmd"], dados.get("args") or {})
+    except Exception:
+        log.exception("Painel: comando %r falhou", dados["cmd"])
+        return {"ok": False, "texto": "Deu erro aqui, olha o log da Natty.", "_status": 500}
+    if not resultado.get("ok"):
+        resultado["_status"] = 400
+    return resultado
 
 
 # -- WebSocket ------------------------------------------------------------------------

@@ -106,7 +106,7 @@ class ServicoDoPainel(unittest.TestCase):
             self.assertIsNone(service.ler_guild_id(ruim))
 
 
-class Web(unittest.IsolatedAsyncioTestCase):
+class _ComPainel(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.controle = ControleFalso()
         self.mestre = SimpleNamespace(id=42, mestre=True)
@@ -126,6 +126,9 @@ class Web(unittest.IsolatedAsyncioTestCase):
         state = parse_qs(urlsplit(r.headers["Location"]).query)["state"][0]
         return await self.client.get(f"/auth/callback?code={code}&state={state}", allow_redirects=False)
 
+
+
+class Web(_ComPainel):
     async def test_sem_login_e_401(self):
         self.assertEqual((await self.client.get("/api/me")).status, 401)
         self.assertEqual((await self.client.get("/api/guilds")).status, 401)
@@ -186,6 +189,55 @@ class Web(unittest.IsolatedAsyncioTestCase):
         self.assertIn("frame-ancestors 'none'", r.headers["Content-Security-Policy"])
         self.assertEqual((await self.client.get("/static/app.js")).status, 200)
         self.assertEqual((await self.client.get("/static/../web.py")).status, 404)
+
+
+class Comandos(_ComPainel):
+    async def test_comando_pelo_websocket_e_pelo_post(self):
+        await self.logar()
+        ws = await self.client.ws_connect("/ws?guild=1", headers=self.origem)
+        await ws.receive_json(timeout=2)
+        await ws.send_json({"id": 7, "cmd": "volume", "args": {"nivel": 30}})
+        msgs = [await ws.receive_json(timeout=2) for _ in range(2)]
+        resposta = next(m for m in msgs if m["tipo"] == "resposta")
+        self.assertEqual((resposta["id"], resposta["ok"]), (7, True))
+        self.assertEqual(next(m for m in msgs if m["tipo"] == "estado")["estado"]["volume"], 30)
+        await ws.close()
+        r = await self.client.post("/api/g/1/cmd", json={"cmd": "pular"}, headers=self.origem)
+        self.assertEqual(((await r.json())["texto"], r.status), ("feito: pular", 200))
+        self.assertEqual([c for c, _ in self.controle.comandos], ["volume", "pular"])
+
+    async def test_sem_cargo_nao_comanda_mas_ve(self):
+        self.mestre.mestre = False
+        await self.logar()
+        r = await self.client.post("/api/g/1/cmd", json={"cmd": "pular"}, headers=self.origem)
+        self.assertEqual(r.status, 403)
+        ws = await self.client.ws_connect("/ws?guild=1", headers=self.origem)
+        self.assertFalse((await ws.receive_json(timeout=2))["pode_controlar"])
+        await ws.send_json({"cmd": "pular"})
+        self.assertFalse((await ws.receive_json(timeout=2))["ok"])
+        await ws.close()
+        self.assertEqual(self.controle.comandos, [])
+
+    async def test_post_sem_origem_ou_invalido(self):
+        await self.logar()
+        self.assertEqual((await self.client.post("/api/g/1/cmd", json={"cmd": "pular"})).status, 403)
+        r = await self.client.post("/api/g/1/cmd", data="{", headers={**self.origem, "Content-Type": "application/json"})
+        self.assertEqual(r.status, 400)
+        for corpo in ([1], {"cmd": 5}, {"cmd": "x", "modulo": ["a"]}):
+            with self.subTest(corpo=corpo):
+                self.assertEqual((await self.client.post("/api/g/1/cmd", json=corpo, headers=self.origem)).status, 400)
+        r = await self.client.post("/api/g/1/cmd", json={"cmd": "x", "modulo": "nada"}, headers=self.origem)
+        self.assertEqual(r.status, 404)
+
+    async def test_quem_saiu_do_servidor_perde_o_websocket(self):
+        await self.logar()
+        ws = await self.client.ws_connect("/ws?guild=1", headers=self.origem)
+        await ws.receive_json(timeout=2)
+        self.guild.membros.clear()
+        await ws.send_json({"cmd": "pular"})
+        msg = await ws.receive(timeout=2)
+        self.assertEqual(ws.close_code, 4403)
+        self.assertEqual(self.controle.comandos, [])
 
 
 if __name__ == "__main__":

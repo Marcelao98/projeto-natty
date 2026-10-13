@@ -1,5 +1,12 @@
 # Changelog
 
+## Bardo, etapa 5: o painel controla o player - 2026-10-12
+
+- `ControleBardo.executar`: tocar (link ou busca), pausar/continuar, pular, parar, volume, repetir (faixa/fila/desligar), remover, limpar a fila, tocar/salvar/listar playlists — pelo mesmo caminho do Discord, com argumentos validados e o cargo de mestre conferido.
+- WebSocket e `POST /api/g/<id>/cmd` aceitam os comandos; autorização revista a cada mensagem (quem sai do servidor perde a conexão).
+- Pedido do painel toca na call em que a Natty está; avisos da fila não vão mais pra "canal nenhum".
+- Testes: Bardo 175, Painel 18.
+
 ## Bardo, etapa 4: motor separado e painel web (leitura) - 2026-10-12
 
 - `modules/bardo/motor.py`: o player (tocar, pular, reconectar, sair da call) saiu do cog; o cog só traduz comando. `eventos.py`: pub/sub que o motor alimenta a cada mudança.

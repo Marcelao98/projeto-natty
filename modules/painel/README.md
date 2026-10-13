@@ -1,7 +1,8 @@
 # Painel web — a música da mesa no navegador
 
-**Status:** etapa 4 (12/10/2026): login e estado do Bardo ao vivo. Testado
-com dublês (aiohttp de verdade, Discord falso); falta o login real.
+**Status:** 12/10/2026: login, estado do Bardo ao vivo e controle (tocar,
+pausar, pular, parar, volume, repetir, remover, playlists). Testado com dublês
+(aiohttp de verdade, Discord falso); falta o login real.
 
 O painel é uma **superfície**, como o Discord: não é uma capacidade nova.
 Ele não toca nada nem guarda nada do Bardo — fala com ele por
@@ -35,7 +36,19 @@ Sem `DISCORD_CLIENT_SECRET` o painel simplesmente não sobe.
 | `POST /auth/logout` | encerra a sessão |
 | `GET /api/me`, `GET /api/guilds` | quem é você; servidores em comum com a Natty |
 | `GET /ws?guild=<id>` | estado do Bardo ao vivo |
-| `POST /api/g/<id>/cmd` | comando pro Bardo (etapa 5) |
+| `POST /api/g/<id>/cmd` | comando pro Bardo (o WebSocket aceita os mesmos: `{"id", "cmd", "args"}`) |
+
+## Comandos
+
+`tocar {pedido}`, `pular`, `pausar`, `continuar`, `parar`, `volume {nivel}`,
+`repetir {modo: faixa|fila|desligar}`, `remover {posicao}`, `limpar_fila`,
+`playlists`, `tocar_playlist {nome}`, `salvar_playlist {nome}`. Rodam pelo
+**mesmo caminho** dos comandos do Discord (`ControleBardo.executar` no
+`motor.py` do Bardo), com os argumentos validados lá. Pedido do painel toca
+na call em que a Natty já está; se ela não está em nenhuma, na de quem pediu.
+O "era essa?" da busca livre só acontece no Discord.
+
+Quem não tem o cargo de mestre vê tudo, mas os controles somem.
 
 ## Segurança
 
