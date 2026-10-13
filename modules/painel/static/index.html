@@ -6,6 +6,7 @@
   <title>Natty · Painel</title>
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/app.js" defer></script>
+  <script src="/static/mixer.js" defer></script>
 </head>
 <body>
   <header class="topo">
@@ -39,8 +40,8 @@
           <button data-cmd="pausar_continuar" id="btn-pausa" type="button" title="Pausar / continuar">⏯</button>
           <button data-cmd="pular" type="button" title="Pular">⏭</button>
           <button data-cmd="parar" type="button" title="Parar e limpar a fila">⏹</button>
-          <button data-cmd="repetir" data-modo="faixa" id="btn-rep-faixa" type="button" title="Repetir a música">🔂</button>
-          <button data-cmd="repetir" data-modo="fila" id="btn-rep-fila" type="button" title="Repetir a fila">🔁</button>
+          <button data-cmd="repetir" data-modo="faixa" id="btn-rep-faixa" type="button" title="Repetir a música">🔁 1</button>
+          <button data-cmd="repetir" data-modo="fila" id="btn-rep-fila" type="button" title="Repetir a fila">🔁 fila</button>
           <label class="volume">🔊 <input id="volume" type="range" min="0" max="100" step="5"> <span id="volume-num"></span></label>
         </div>
         <form id="form-tocar" class="tocar so-mestre">
@@ -64,7 +65,55 @@
         </form>
       </div>
 
-      <section id="mixer"></section>
+      <section id="mixer" class="so-mestre">
+        <div class="cartao">
+          <div class="rotulo">Mesa de som</div>
+          <div class="faders">
+            <label>Geral <input id="master" type="range" min="0" max="100" step="5"> <span id="master-num"></span></label>
+            <label title="Quanto a música abaixa quando um efeito toca">Ducking <input id="ducking" type="range" min="0" max="100" step="5"> <span id="ducking-num"></span></label>
+          </div>
+        </div>
+
+        <div class="cartao">
+          <div class="rotulo">Efeitos <span class="dica-curta">· teclas 1–9</span></div>
+          <div id="pads" class="pads"></div>
+        </div>
+
+        <div class="cartao">
+          <div class="rotulo">Ambientes
+            <button data-acao="ambientes-off" class="discreto direita" type="button">desligar todos</button></div>
+          <ul id="ambientes" class="lista"></ul>
+        </div>
+
+        <div class="cartao">
+          <div class="rotulo">Músicas enviadas</div>
+          <ul id="musicas-enviadas" class="lista"></ul>
+        </div>
+
+        <div class="cartao">
+          <div class="rotulo">Cenas</div>
+          <ul id="cenas" class="lista"></ul>
+          <form id="form-cena" class="tocar">
+            <input id="nome-cena" type="text" maxlength="60" placeholder="Salvar o que está ligado como cena…" autocomplete="off">
+            <button type="submit">Salvar cena</button>
+          </form>
+        </div>
+
+        <div class="cartao">
+          <div class="rotulo">Enviar som</div>
+          <form id="form-upload" class="upload">
+            <input id="up-arquivo" type="file" accept=".mp3,.ogg,.opus,.wav,.flac,.m4a,.webm,audio/*" required>
+            <input id="up-nome" type="text" maxlength="60" placeholder="Nome" required autocomplete="off">
+            <select id="up-tipo">
+              <option value="efeito">efeito (pad)</option>
+              <option value="ambiente">ambiente (loop)</option>
+              <option value="musica">música</option>
+            </select>
+            <button class="principal" type="submit">Enviar</button>
+          </form>
+        </div>
+        <audio id="pre-escuta" preload="none"></audio>
+      </section>
 
       <p id="aviso" class="aviso" role="status" aria-live="polite"></p>
       <p id="leitura" class="dica" hidden>Você está vendo em modo leitura: comandar pede o cargo de mestre (Condutor).</p>

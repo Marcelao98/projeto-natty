@@ -38,11 +38,27 @@ Sem `DISCORD_CLIENT_SECRET` o painel simplesmente não sobe.
 | `GET /ws?guild=<id>` | estado do Bardo ao vivo |
 | `POST /api/g/<id>/cmd` | comando pro Bardo (o WebSocket aceita os mesmos: `{"id", "cmd", "args"}`) |
 
+## Mesa de som (desde 12/10/2026)
+
+Abaixo do player: volume geral e ducking, **pads** de efeito (clique ou
+teclas 1–9), ambientes com liga/desliga e volume próprio, músicas enviadas
+(vão pra fila), cenas (aplicar, salvar o que está ligado, apagar), upload
+de som e **pré-escuta** (🎧 toca o arquivo só no seu navegador, via
+`GET /api/g/<id>/ouvir?nome=`). O upload (`POST /api/g/<id>/som`, multipart,
+até 20 MB) passa pelas mesmas regras do `/som enviar`. As listas se
+atualizam sozinhas quando alguém salva ou apaga algo (`mixer.colecao` no estado).
+
+Conferido renderizando num Chromium headless com o motor de verdade e
+Discord falso; falta tocar nos pads numa sessão real.
+
 ## Comandos
 
 `tocar {pedido}`, `pular`, `pausar`, `continuar`, `parar`, `volume {nivel}`,
 `repetir {modo: faixa|fila|desligar}`, `remover {posicao}`, `limpar_fila`,
-`playlists`, `tocar_playlist {nome}`, `salvar_playlist {nome}`. Rodam pelo
+`playlists`, `tocar_playlist {nome}`, `salvar_playlist {nome}`, `sons`,
+`som_tocar {nome}`, `som_parar {nome?}`, `som_volume {nome, nivel}`,
+`master {nivel}`, `ducking {nivel}`, `cenas`, `cena_aplicar {nome}`,
+`cena_salvar {nome, pads}`, `cena_apagar {nome}`. Rodam pelo
 **mesmo caminho** dos comandos do Discord (`ControleBardo.executar` no
 `motor.py` do Bardo), com os argumentos validados lá. Pedido do painel toca
 na call em que a Natty já está; se ela não está em nenhuma, na de quem pediu.

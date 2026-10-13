@@ -201,7 +201,7 @@ class BardoCog(MotorBardo, commands.Cog):
             await interaction.response.send_message(str(e), ephemeral=True)
             return
         await interaction.response.send_message(f"💾 Salvei a playlist **{escape_markdown(nome)}** ({quantas} músicas).")
-        self._notificar(interaction.guild.id)
+        self._colecao_mudou(interaction.guild.id)
 
     @playlist.command(name="tocar", description="Põe uma playlist salva na fila")
     @app_commands.describe(nome="Nome da playlist (veja em /playlist listar)")
@@ -245,7 +245,7 @@ class BardoCog(MotorBardo, commands.Cog):
             await interaction.response.send_message(str(e), ephemeral=True)
             return
         await interaction.response.send_message(f"🗑️ Apaguei a playlist **{escape_markdown(nome)}**.")
-        self._notificar(interaction.guild.id)
+        self._colecao_mudou(interaction.guild.id)
 
     som = app_commands.Group(name="som", description="Ambientes, efeitos e cenas da mesa", guild_only=True)
 
@@ -267,7 +267,7 @@ class BardoCog(MotorBardo, commands.Cog):
             await interaction.followup.send(str(e))
             return
         await interaction.followup.send(f"🎚️ Guardei o {som['tipo']} **{escape_markdown(som['nome'])}**.")
-        self._notificar(interaction.guild.id)
+        self._colecao_mudou(interaction.guild.id)
 
     @som.command(name="tocar", description="Liga um ambiente, dispara um efeito ou põe uma música enviada na fila")
     async def som_tocar(self, interaction: discord.Interaction, nome: str):
@@ -316,7 +316,7 @@ class BardoCog(MotorBardo, commands.Cog):
             await interaction.response.send_message(str(e), ephemeral=True)
             return
         await interaction.response.send_message(f"🗑️ Apaguei o som **{escape_markdown(nome)}**.")
-        self._notificar(interaction.guild.id)
+        self._colecao_mudou(interaction.guild.id)
 
     @som.command(name="cena-salvar", description="Salva os ambientes ligados + volume geral + ducking como cena")
     async def som_cena_salvar(self, interaction: discord.Interaction, nome: str):

@@ -12,6 +12,8 @@ Rotas:
   GET  /api/guilds            servidores em comum com a Natty (+ se pode controlar)
   GET  /ws?guild=<id>         WebSocket: estado do Bardo ao vivo
   POST /api/g/{id}/cmd        comando pro Bardo (o WebSocket aceita os mesmos)
+  POST /api/g/{id}/som        envia um som (multipart: arquivo, nome, tipo)
+  GET  /api/g/{id}/ouvir?nome=  o arquivo do som, pra pré-escuta no navegador
 
 Autorização é conferida AO VIVO no bot (membro do servidor; cargo de mestre
 pra comandar) a cada requisição e a cada mensagem do WebSocket — a lista de
@@ -36,6 +38,7 @@ log = logging.getLogger(__name__)
 PASTA_STATIC = Path(__file__).parent / "static"
 COOKIE = "natty_sessao"
 COOKIE_STATE = "natty_state"
+MAX_UPLOAD = 21 * 1024 * 1024
 
 CHAVE_BOT = web.AppKey("bot", object)
 CHAVE_CONFIG = web.AppKey("config", object)
@@ -56,7 +59,8 @@ class ConfigPainel:
 
 def criar_app(bot, config: ConfigPainel, oauth) -> web.Application:
     """`oauth` tem client_id, trocar_codigo(code, redirect_uri) e buscar_usuario(token) (oauth.OAuthDiscord)."""
-    app = web.Application(middlewares=[_cabecalhos_de_seguranca], client_max_size=1024 * 1024)
+    # Corpo grande só por causa do upload de som (o limite de verdade é o do Bardo).
+    app = web.Application(middlewares=[_cabecalhos_de_seguranca], client_max_size=MAX_UPLOAD)
     app[CHAVE_BOT], app[CHAVE_CONFIG], app[CHAVE_OAUTH] = bot, config, oauth
     app[CHAVE_SESSOES], app[CHAVE_ESTADOS] = service.Sessoes(), service.EstadosOAuth()
     app.router.add_get("/", _pagina)
@@ -67,6 +71,8 @@ def criar_app(bot, config: ConfigPainel, oauth) -> web.Application:
     app.router.add_get("/api/guilds", _guilds)
     app.router.add_get("/ws", _ws)
     app.router.add_post("/api/g/{guild_id}/cmd", _cmd)
+    app.router.add_post("/api/g/{guild_id}/som", _enviar_som)
+    app.router.add_get("/api/g/{guild_id}/ouvir", _ouvir)
     app.router.add_static("/static", PASTA_STATIC, show_index=False, follow_symlinks=False)
     return app
 
@@ -223,6 +229,43 @@ async def _executar(request, guild, membro, dados) -> dict:
     if not resultado.get("ok"):
         resultado["_status"] = 400
     return resultado
+
+
+async def _enviar_som(request):
+    """Upload de som pelo painel. Lê o multipart com limite e entrega pro Bardo (que valida tipo/extensão/tamanho)."""
+    _exigir_origem(request)
+    usuario = _exigir_usuario(request)
+    guild, membro = _guild_e_membro(request, usuario, request.match_info["guild_id"])
+    controle = _controle(request)
+    if controle is None or not controle.pode_controlar(membro):
+        return web.json_response({"ok": False, "texto": "Enviar som pede o cargo de mestre."}, status=403)
+    campos, arquivo, nome_do_arquivo = {}, None, ""
+    try:
+        leitor = await request.multipart()
+        async for parte in leitor:
+            if parte.name == "arquivo":
+                nome_do_arquivo = parte.filename or ""
+                arquivo = await parte.read()
+            elif parte.name in ("nome", "tipo"):
+                campos[parte.name] = (await parte.text())[:100]
+    except (ValueError, AssertionError):
+        return web.json_response({"ok": False, "texto": "Envio inválido."}, status=400)
+    if not arquivo:
+        return web.json_response({"ok": False, "texto": "Faltou o arquivo."}, status=400)
+    resultado = await controle.enviar_som(guild, membro, campos.get("nome", ""), campos.get("tipo", ""),
+                                          nome_do_arquivo, bytes(arquivo))
+    return web.json_response(resultado, status=200 if resultado.get("ok") else 400)
+
+
+async def _ouvir(request):
+    """Pré-escuta: devolve o arquivo do som (qualquer membro do servidor; quem decide o caminho é o Bardo)."""
+    usuario = _exigir_usuario(request)
+    guild, membro = _guild_e_membro(request, usuario, request.match_info["guild_id"])
+    controle = _controle(request)
+    caminho = await controle.arquivo_do_som(guild, membro, request.query.get("nome", "")[:100]) if controle else None
+    if caminho is None:
+        raise web.HTTPNotFound(text="som não encontrado")
+    return web.FileResponse(caminho, headers={"Cache-Control": "private, max-age=3600"})
 
 
 # -- WebSocket ------------------------------------------------------------------------

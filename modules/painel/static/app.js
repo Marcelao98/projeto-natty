@@ -174,13 +174,16 @@ document.addEventListener("DOMContentLoaded", () => {
     const nome = $("nome-playlist").value.trim();
     if (!nome) return;
     const r = await comando("salvar_playlist", { nome });
-    if (r && r.ok) { $("nome-playlist").value = ""; carregarPlaylists(); }
+    if (r && r.ok) $("nome-playlist").value = "";
   });
   $("sair").addEventListener("click", async () => {
     await fetch("/auth/logout", { method: "POST", credentials: "same-origin" });
     location.reload();
   });
-  document.addEventListener("natty:estado", () => { if (podeControlar && !carregadas) { carregadas = true; carregarPlaylists(); } });
+  let colecaoDasPlaylists = null;
+  document.addEventListener("natty:estado", () => {
+    const colecao = `${guildAtual}:${estado.mixer ? estado.mixer.colecao : 0}`;
+    if (podeControlar && colecao !== colecaoDasPlaylists) { colecaoDasPlaylists = colecao; carregarPlaylists(); }
+  });
   iniciar();
 });
-let carregadas = false;

@@ -88,6 +88,7 @@ class MotorBardo:
         self._saidas: dict[int, asyncio.Task] = {}
         self.eventos = Publicador()
         self._mixers: dict[int, MixerSource] = {}  # guild.id → mixer (sobrevive à conexão)
+        self._versoes: dict[int, int] = {}  # guild.id → muda quando sons/cenas/playlists salvos mudam
         self._masters: dict[int, int] = {}  # guild.id → volume geral (0-100)
         self._duckings: dict[int, int] = {}  # guild.id → quanto a música abaixa com efeito "duck" (0-100)
         # sha256 do efeito → amostras já decodificadas (o pad dispara sem esperar ffmpeg)
@@ -525,6 +526,11 @@ class MotorBardo:
         """Avisa quem acompanha o estado do Bardo (o painel) que algo mudou."""
         self.eventos.publicar(guild_id)
 
+    def _colecao_mudou(self, guild_id: int) -> None:
+        """Mudou o que está SALVO (sons, cenas, playlists): o painel recarrega as listas."""
+        self._versoes[guild_id] = self._versoes.get(guild_id, 0) + 1
+        self._notificar(guild_id)
+
     def _mixer(self, guild: discord.Guild) -> MixerSource:
         """O mixer do servidor. Vive aqui, não na conexão: sobrevive a reconexão e troca de cliente (Echo)."""
         return self._mixers.setdefault(guild.id, MixerSource())
@@ -628,7 +634,7 @@ class MotorBardo:
         if som["tipo"] == "ambiente" and som["nome_chave"] in mixer.ambientes:
             mixer.tocar_ambiente(som["nome_chave"], self._fabrica_do_som(guild.id, som), ganho=som["volume"] / 100,
                                  fade_s=0.3, duck=som["duck"])
-        self._notificar(guild.id)
+        self._colecao_mudou(guild.id)
         return f"**{escape_markdown(som['nome'])}** em {som['volume']}%."
 
     def _master(self, guild: discord.Guild) -> int:
@@ -663,7 +669,7 @@ class MotorBardo:
                            dados: dict | None = None) -> str:
         dados = dados if dados is not None else self._capturar_cena(guild)
         nome = await asyncio.to_thread(service.salvar_cena, guild.id, nome, dados, autor_id)
-        self._notificar(guild.id)
+        self._colecao_mudou(guild.id)
         return f"🎬 Cena **{escape_markdown(nome)}** salva ({len(dados.get('ambientes', []))} ambientes)."
 
     async def _cena_aplicar(self, guild: discord.Guild, canal, nome: str) -> str:
@@ -776,6 +782,7 @@ class ControleBardo:
             "volume": motor._volume(guild),
             "max_fila": service.MAX_FILA,
             "mixer": {
+                "colecao": motor._versoes.get(guild.id, 0),
                 "master": motor._master(guild),
                 "ducking": motor._ducking(guild),
                 "ambientes": [{"som": chave, "volume": round(a["volume"] * 100), "duck": a["duck"]}
@@ -845,6 +852,7 @@ class ControleBardo:
                     service.salvar_playlist, guild.id, _texto(args.get("nome"), 100), musicas, membro.id,
                     bool(args.get("substituir")),
                 )
+                motor._colecao_mudou(guild.id)
                 return {"ok": True, "texto": f"Salvei a playlist {nome} ({quantas} músicas)."}
             if comando == "sons":
                 sons = await asyncio.to_thread(service.listar_sons, guild.id)
@@ -879,7 +887,7 @@ class ControleBardo:
                     guild, _texto(args.get("nome"), 100), membro.id, dados))}
             if comando == "cena_apagar":
                 apagou = await asyncio.to_thread(service.apagar_cena, guild.id, _texto(args.get("nome"), 100))
-                motor._notificar(guild.id)
+                motor._colecao_mudou(guild.id)
                 return {"ok": apagou, "texto": "Cena apagada." if apagou else "Essa cena não existe."}
             # tocar_playlist
             canal = self._canal_de_voz(guild, membro)
@@ -901,7 +909,7 @@ class ControleBardo:
                                           membro.id)
         except service.ErroDeColecao as e:
             return {"ok": False, "texto": _sem_negrito(str(e))}
-        self._motor._notificar(guild.id)
+        self._motor._colecao_mudou(guild.id)
         return {"ok": True, "texto": f"Guardei o {som['tipo']} {som['nome']}."}
 
     async def arquivo_do_som(self, guild, membro, nome: str):

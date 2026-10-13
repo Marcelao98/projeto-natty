@@ -30,7 +30,8 @@ class Bot(SimpleNamespace):
 
 class ControleFalso:
     def __init__(self):
-        self.assinantes, self.comandos = [], []
+        self.assinantes, self.comandos, self.enviados = [], [], []
+        self.arquivo = None
         self.volume = 50
 
     def assinar(self, f):
@@ -48,6 +49,13 @@ class ControleFalso:
     def publicar(self, guild_id):
         for f in list(self.assinantes):
             f(guild_id)
+
+    async def enviar_som(self, guild, membro, nome, tipo, nome_do_arquivo, conteudo):
+        self.enviados.append((nome, tipo, nome_do_arquivo, conteudo))
+        return {"ok": True, "texto": f"Guardei o {tipo} {nome}."}
+
+    async def arquivo_do_som(self, guild, membro, nome):
+        return self.arquivo if nome == "Trovão" else None
 
     async def executar(self, guild, membro, comando, args):
         self.comandos.append((comando, args))
@@ -238,6 +246,47 @@ class Comandos(_ComPainel):
         msg = await ws.receive(timeout=2)
         self.assertEqual(ws.close_code, 4403)
         self.assertEqual(self.controle.comandos, [])
+
+
+class Sons(_ComPainel):
+    def formulario(self, conteudo=b"RIFF....", nome="Trovão"):
+        from aiohttp import FormData
+        dados = FormData()
+        dados.add_field("nome", nome)
+        dados.add_field("tipo", "efeito")
+        dados.add_field("arquivo", conteudo, filename="trovao.wav", content_type="audio/wav")
+        return dados
+
+    async def test_upload(self):
+        await self.logar()
+        r = await self.client.post("/api/g/1/som", data=self.formulario(), headers=self.origem)
+        self.assertEqual((r.status, (await r.json())["ok"]), (200, True))
+        self.assertEqual(self.controle.enviados, [("Trovão", "efeito", "trovao.wav", b"RIFF....")])
+
+    async def test_upload_recusado(self):
+        await self.logar()
+        self.assertEqual((await self.client.post("/api/g/1/som", data=self.formulario())).status, 403)  # origem
+        self.mestre.mestre = False
+        r = await self.client.post("/api/g/1/som", data=self.formulario(), headers=self.origem)
+        self.assertEqual(r.status, 403)
+        self.mestre.mestre = True
+        r = await self.client.post("/api/g/1/som", data=self.formulario(b"x" * (web.MAX_UPLOAD + 1)),
+                                   headers=self.origem)
+        self.assertEqual(r.status, 413)
+        self.assertEqual(self.controle.enviados, [])
+
+    async def test_pre_escuta(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            self.controle.arquivo = Path(tmp) / "abc.wav"
+            self.controle.arquivo.write_bytes(b"RIFFdados")
+            self.assertEqual((await self.client.get("/api/g/1/ouvir?nome=Trovão")).status, 401)
+            await self.logar()
+            r = await self.client.get("/api/g/1/ouvir?nome=Trovão")
+            self.assertEqual((r.status, await r.read()), (200, b"RIFFdados"))
+            self.assertEqual((await self.client.get("/api/g/1/ouvir?nome=Nada")).status, 404)
+            self.assertEqual((await self.client.get("/api/g/2/ouvir?nome=Trovão")).status, 403)
 
 
 if __name__ == "__main__":

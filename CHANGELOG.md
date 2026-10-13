@@ -1,5 +1,12 @@
 # Changelog
 
+## Bardo, etapa 8: mesa de som no painel - 2026-10-12
+
+- Painel ganhou a mesa de som: volume geral, ducking, pads de efeito (teclas 1–9), ambientes com liga/desliga e volume, músicas enviadas, cenas (aplicar/salvar/apagar), upload e pré-escuta no navegador.
+- Rotas `POST /api/g/<id>/som` (multipart, só mestre, origem conferida) e `GET /api/g/<id>/ouvir` (membro do servidor).
+- Estado leva `mixer.colecao`: quando alguém salva/apaga som, cena ou playlist, as listas de todas as telas recarregam.
+- Conferido com Chromium headless (motor real, Discord falso). Testes: Painel 21.
+
 ## Bardo, etapa 7: ambientes, efeitos e cenas - 2026-10-12
 
 - `/som enviar|tocar|parar|volume|geral|ducking|lista|apagar|cena-salvar|cena|cenas`.
