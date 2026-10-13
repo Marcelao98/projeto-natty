@@ -247,6 +247,104 @@ class BardoCog(MotorBardo, commands.Cog):
         await interaction.response.send_message(f"🗑️ Apaguei a playlist **{escape_markdown(nome)}**.")
         self._notificar(interaction.guild.id)
 
+    som = app_commands.Group(name="som", description="Ambientes, efeitos e cenas da mesa", guild_only=True)
+
+    @som.command(name="enviar", description="Guarda um som do servidor (ambiente em loop, efeito ou música)")
+    @app_commands.describe(arquivo="Arquivo de áudio (mp3, ogg, wav, flac, m4a, opus, webm)", nome="Nome do som",
+                           tipo="Ambiente toca em loop; efeito é um disparo (pad)", tags="Separadas por vírgula")
+    @app_commands.choices(tipo=[app_commands.Choice(name=t, value=t) for t in service.TIPOS_DE_SOM])
+    async def som_enviar(self, interaction: discord.Interaction, arquivo: discord.Attachment, nome: str,
+                         tipo: app_commands.Choice[str], tags: str | None = None):
+        if arquivo.size > service.MAX_BYTES_DO_SOM:
+            await interaction.response.send_message("Arquivo grande demais.", ephemeral=True)
+            return
+        await interaction.response.defer(thinking=True)
+        try:
+            conteudo = await arquivo.read()
+            som = await asyncio.to_thread(service.guardar_som, interaction.guild.id, nome, tipo.value,
+                                          arquivo.filename, conteudo, interaction.user.id, tags)
+        except service.ErroDeColecao as e:
+            await interaction.followup.send(str(e))
+            return
+        await interaction.followup.send(f"🎚️ Guardei o {som['tipo']} **{escape_markdown(som['nome'])}**.")
+        self._notificar(interaction.guild.id)
+
+    @som.command(name="tocar", description="Liga um ambiente, dispara um efeito ou põe uma música enviada na fila")
+    async def som_tocar(self, interaction: discord.Interaction, nome: str):
+        await interaction.response.defer(thinking=True)
+        canal = getattr(interaction.user.voice, "channel", None)
+        await interaction.followup.send(await self._responder_som(self._som_tocar(interaction.guild, canal, nome)))
+
+    @som.command(name="parar", description="Desliga um ambiente (ou todos, sem nome)")
+    async def som_parar(self, interaction: discord.Interaction, nome: str | None = None):
+        await interaction.response.send_message(await self._responder_som(self._som_parar(interaction.guild, nome)))
+
+    @som.command(name="volume", description="Volume de um som (guardado; muda na hora se for ambiente ligado)")
+    async def som_volume(self, interaction: discord.Interaction, nome: str, nivel: app_commands.Range[int, 0, 100]):
+        await interaction.response.send_message(
+            await self._responder_som(self._som_volume(interaction.guild, nome, nivel)))
+
+    @som.command(name="geral", description="Volume geral da Natty (música + ambiente + efeitos)")
+    async def som_geral(self, interaction: discord.Interaction, nivel: app_commands.Range[int, 0, 100]):
+        await interaction.response.send_message(self._mudar_master(interaction.guild, nivel))
+
+    @som.command(name="ducking", description="Quanto a música abaixa quando um efeito toca (0 = nada)")
+    async def som_ducking(self, interaction: discord.Interaction, nivel: app_commands.Range[int, 0, 100]):
+        await interaction.response.send_message(self._mudar_ducking(interaction.guild, nivel))
+
+    @som.command(name="lista", description="Lista os sons guardados do servidor")
+    async def som_lista(self, interaction: discord.Interaction):
+        sons = await asyncio.to_thread(service.listar_sons, interaction.guild.id)
+        if not sons:
+            await interaction.response.send_message("Nenhum som guardado. Usa `/som enviar`.")
+            return
+        ligados = self._mixer(interaction.guild).ambientes
+        linhas = []
+        for tipo, emoji in (("ambiente", "🌫️"), ("efeito", "💥"), ("musica", "🎵")):
+            nomes = [f"{escape_markdown(x['nome'])}{' (ligado)' if x['nome_chave'] in ligados else ''}"
+                     for x in sons if x["tipo"] == tipo]
+            if nomes:
+                linhas.append(f"{emoji} **{tipo}**: " + ", ".join(nomes))
+        await interaction.response.send_message("\n".join(linhas))
+
+    @som.command(name="apagar", description="Apaga um som (quem enviou ou o cargo de mestre)")
+    async def som_apagar(self, interaction: discord.Interaction, nome: str):
+        try:
+            nome = await asyncio.to_thread(service.apagar_som, interaction.guild.id, nome, interaction.user.id,
+                                           _eh_mestre(interaction.user))
+        except service.ErroDeColecao as e:
+            await interaction.response.send_message(str(e), ephemeral=True)
+            return
+        await interaction.response.send_message(f"🗑️ Apaguei o som **{escape_markdown(nome)}**.")
+        self._notificar(interaction.guild.id)
+
+    @som.command(name="cena-salvar", description="Salva os ambientes ligados + volume geral + ducking como cena")
+    async def som_cena_salvar(self, interaction: discord.Interaction, nome: str):
+        await interaction.response.send_message(await self._responder_som(
+            self._cena_salvar(interaction.guild, nome, interaction.user.id)))
+
+    @som.command(name="cena", description="Liga uma cena salva")
+    async def som_cena(self, interaction: discord.Interaction, nome: str):
+        await interaction.response.defer(thinking=True)
+        canal = getattr(interaction.user.voice, "channel", None)
+        await interaction.followup.send(await self._responder_som(self._cena_aplicar(interaction.guild, canal, nome)))
+
+    @som.command(name="cenas", description="Lista as cenas salvas")
+    async def som_cenas(self, interaction: discord.Interaction):
+        cenas = await asyncio.to_thread(service.listar_cenas, interaction.guild.id)
+        texto = ("🎬 Cenas: " + ", ".join(f"**{escape_markdown(c['nome'])}**" for c in cenas)) if cenas \
+            else "Nenhuma cena salva. Liga uns ambientes e usa `/som cena-salvar`."
+        await interaction.response.send_message(texto)
+
+    async def _responder_som(self, corrotina) -> str:
+        """Erro de coleção (nome errado...) e de arquivo viram resposta, não exceção."""
+        try:
+            return await corrotina
+        except service.ErroDeColecao as e:
+            return str(e)
+        except service.ArquivoNaoEncontrado:
+            return "O arquivo desse som sumiu da pasta da Natty. Apaga e envia de novo."
+
     @app_commands.command(name="pausar", description="Pausa a música")
     @app_commands.guild_only()
     async def pausar(self, interaction: discord.Interaction):

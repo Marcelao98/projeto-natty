@@ -59,6 +59,7 @@ Entra num canal de voz e me chama:
 • `@Natty para` — paro a música e limpo a fila (continuo no canal; quando todo mundo sai da call, eu saio também)
 • `@Natty volume 30` · `@Natty aumenta o volume` · `@Natty abaixa`
 
+Som de mesa: `/som enviar` (ambiente, efeito ou música), `/som tocar`, `/som parar`, `/som cena`.
 Playlists salvas: `/playlist salvar`, `/playlist tocar` (ou `@Natty toca a playlist <nome>`), `/playlist listar`.
 Também tem `/tocar`, `/pular`, `/fila`, `/limpar-fila`, `/remover`, `/repetir`, `/pausar`, `/continuar`, `/parar` e `/volume`.""",
     "core": """\

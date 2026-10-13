@@ -14,6 +14,7 @@ futuro módulo de LLM) poder chamar direto.
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import os
 import random
@@ -674,6 +675,10 @@ def resolver_musica(url: str) -> dict:
     opcoes_ffmpeg(). Levanta ErroDeMusica (VideoPrivado, RestricaoDeIdade,
     ArquivoNaoEncontrado...) com o motivo.
     """
+    if url.startswith(PREFIXO_SOM):
+        caminho = caminho_do_som_link(url)
+        return {"titulo": caminho.stem, "stream_url": str(caminho), "duracao_segundos": None,
+                "http_headers": {}, "local": True}
     if eh_arquivo_local(url):
         caminho = caminho_local(url)
         return {"titulo": caminho.stem, "stream_url": str(caminho), "duracao_segundos": None,
@@ -1066,7 +1071,7 @@ def apagar_playlist(guild_id: int, nome: str, autor_id: int | None = None, mestr
 def salvar_cena(guild_id: int, nome: str, dados: dict, autor_id: int | None = None) -> str:
     """Salva (ou atualiza) uma cena: o estado do mixer (música, ambientes, pads, ducking, master)."""
     nome, chave = _nome_valido(nome, "a cena")
-    storage.salvar_cena(guild_id, nome, chave, dados, None if autor_id is None else str(autor_id))
+    storage.salvar_cena(guild_id, nome, chave, validar_cena(dados), None if autor_id is None else str(autor_id))
     return nome
 
 
@@ -1085,3 +1090,172 @@ def listar_cenas(guild_id: int) -> list[dict]:
 def apagar_cena(guild_id: int, nome: str) -> bool:
     nome, chave = _nome_valido(nome, "a cena")
     return storage.apagar_cena(guild_id, chave)
+
+
+# ---------------------------------------------------------------------------
+# Sons da mesa: ambientes (loop), efeitos (pads) e músicas enviadas
+#
+# Arquivo em data/som/<guild>/<sha256>.<ext> (BARDO_PASTA_SOM; fora do git).
+# Nome por hash: nada de path traversal com nome de arquivo, e o mesmo áudio
+# enviado duas vezes vira um arquivo só. O registro (nome, tipo, volume,
+# loop, duck, tags) fica na tabela sons do bardo.db.
+# ---------------------------------------------------------------------------
+
+TIPOS_DE_SOM = ("ambiente", "efeito", "musica")
+EXTENSOES_DE_SOM = {".mp3", ".ogg", ".opus", ".wav", ".flac", ".m4a", ".webm"}
+MAX_BYTES_DO_SOM = 20 * 1024 * 1024
+MAX_TAGS = 8
+PREFIXO_SOM = "som:"
+_ARQUIVO_DE_SOM_RE = re.compile(r"^[0-9a-f]{64}\.[a-z0-9]{2,5}$")
+PROFUNDIDADE_DUCKING_PADRAO = 60   # % que a música abaixa quando um efeito "duck" toca
+
+
+def pasta_de_sons(guild_id: int) -> Path:
+    pasta = Path(os.getenv("BARDO_PASTA_SOM") or "data/som")
+    pasta = pasta if pasta.is_absolute() else _RAIZ_DO_PROJETO / pasta
+    return pasta / str(int(guild_id))
+
+
+def caminho_do_som(guild_id: int, arquivo: str) -> Path:
+    """Caminho do arquivo de um som; ArquivoNaoEncontrado se o nome não for <hash>.<ext> ou o arquivo sumiu."""
+    if not _ARQUIVO_DE_SOM_RE.match(arquivo or ""):
+        raise ArquivoNaoEncontrado(arquivo)
+    caminho = pasta_de_sons(guild_id) / arquivo
+    if not caminho.is_file():
+        raise ArquivoNaoEncontrado(arquivo)
+    return caminho
+
+
+def link_do_som(guild_id: int, som: dict) -> str:
+    """Link de fila de um som tipo música: "som:<guild>/<arquivo>" (resolver_musica entende)."""
+    return f"{PREFIXO_SOM}{int(guild_id)}/{som['arquivo']}"
+
+
+def caminho_do_som_link(link: str) -> Path:
+    guild, _, arquivo = link[len(PREFIXO_SOM):].partition("/")
+    if not guild.isdigit():
+        raise ArquivoNaoEncontrado(link)
+    return caminho_do_som(int(guild), arquivo)
+
+
+def _limpar_tags(tags) -> list[str]:
+    if isinstance(tags, str):
+        tags = re.split(r"[,;]", tags)
+    limpas = []
+    for t in tags or []:
+        t = " ".join(str(t).lower().split())[:30]
+        if t and t not in limpas:
+            limpas.append(t)
+    return limpas[:MAX_TAGS]
+
+
+def guardar_som(guild_id: int, nome: str, tipo: str, nome_do_arquivo: str, conteudo: bytes,
+                autor_id: int | None = None, tags=None, volume: int = 100) -> dict:
+    """Guarda um som enviado (Discord ou painel) e devolve o registro.
+
+    Recusa (ErroDeColecao) tipo desconhecido, extensão fora da lista branca,
+    arquivo vazio ou grande demais, nome repetido e áudio que já está no
+    servidor com outro nome. Ambiente nasce em loop; efeito nasce com duck.
+    """
+    nome, chave = _nome_valido(nome, "o som")
+    if tipo not in TIPOS_DE_SOM:
+        raise ErroDeColecao("Tipo tem que ser ambiente, efeito ou musica.")
+    extensao = Path(nome_do_arquivo or "").suffix.lower()
+    if extensao not in EXTENSOES_DE_SOM:
+        raise ErroDeColecao("Formato não aceito. Manda " + ", ".join(sorted(EXTENSOES_DE_SOM)) + ".")
+    if not conteudo:
+        raise ErroDeColecao("O arquivo veio vazio.")
+    if len(conteudo) > MAX_BYTES_DO_SOM:
+        raise ErroDeColecao(f"Arquivo grande demais (máximo {MAX_BYTES_DO_SOM // (1024 * 1024)} MB).")
+    if storage.buscar_som(guild_id, chave) is not None:
+        raise ErroDeColecao(f"Já tem um som chamado **{nome}**.")
+    hash_ = hashlib.sha256(conteudo).hexdigest()
+    repetido = storage.som_com_hash(guild_id, hash_)
+    if repetido is not None:
+        raise ErroDeColecao(f"Esse áudio já está aqui, como **{repetido['nome']}**.")
+    pasta = pasta_de_sons(guild_id)
+    pasta.mkdir(parents=True, exist_ok=True)
+    arquivo = f"{hash_}{extensao}"
+    destino = pasta / arquivo
+    if not destino.exists():
+        temporario = destino.with_suffix(destino.suffix + ".parcial")
+        temporario.write_bytes(conteudo)
+        temporario.replace(destino)
+    som = {"nome": nome, "nome_chave": chave, "tipo": tipo, "arquivo": arquivo, "hash": hash_,
+           "tags": _limpar_tags(tags), "volume": max(0, min(100, int(volume))),
+           "loop": tipo == "ambiente", "duck": tipo == "efeito",
+           "criado_por": None if autor_id is None else str(autor_id)}
+    storage.inserir_som(guild_id, som)
+    return storage.buscar_som(guild_id, chave)
+
+
+def buscar_som(guild_id: int, nome: str, tipo: str | None = None) -> dict:
+    """Registro do som pelo nome (sem acento/maiúscula), com sugestão se errar."""
+    nome, chave = _nome_valido(nome, "o som")
+    som = storage.buscar_som(guild_id, chave)
+    if som is None or (tipo and som["tipo"] != tipo):
+        existentes = storage.listar_sons(guild_id, tipo)
+        o_que = {"ambiente": "ambiente", "efeito": "efeito", "musica": "música"}.get(tipo, "som")
+        raise ErroDeColecao(f"Não tem {o_que} **{nome}**.{_sugestao(chave, existentes)}")
+    return som
+
+
+def listar_sons(guild_id: int, tipo: str | None = None) -> list[dict]:
+    return storage.listar_sons(guild_id, tipo)
+
+
+def configurar_som(guild_id: int, nome: str, volume: int | None = None, duck: bool | None = None,
+                   tags=None) -> dict:
+    som = buscar_som(guild_id, nome)
+    campos = {}
+    if volume is not None:
+        campos["volume"] = max(0, min(100, int(volume)))
+    if duck is not None:
+        campos["duck"] = bool(duck)
+    if tags is not None:
+        campos["tags"] = _limpar_tags(tags)
+    storage.atualizar_som(guild_id, som["nome_chave"], campos)
+    return storage.buscar_som(guild_id, som["nome_chave"])
+
+
+def apagar_som(guild_id: int, nome: str, autor_id: int | None = None, mestre: bool = False) -> str:
+    """Apaga o som (quem enviou ou mestre) e o arquivo, se nenhum outro registro usa."""
+    som = buscar_som(guild_id, nome)
+    if not mestre and som["criado_por"] != (None if autor_id is None else str(autor_id)):
+        raise ErroDeColecao(f"Só quem enviou **{som['nome']}** ou quem tem o cargo {cargo_mestre()} apaga.")
+    storage.apagar_som(guild_id, som["nome_chave"])
+    if storage.som_com_hash(guild_id, som["hash"]) is None:
+        try:
+            caminho_do_som(guild_id, som["arquivo"]).unlink()
+        except (ArquivoNaoEncontrado, OSError):
+            pass
+    return som["nome"]
+
+
+def validar_cena(dados) -> dict:
+    """Limpa o JSON de uma cena (vem do painel ou do estado do mixer).
+
+    {"musica": {"playlist": nome} | None, "ambientes": [{"som", "volume"}],
+     "pads": [nome], "ducking": 0-100, "master": 0-100}
+    """
+    if not isinstance(dados, dict):
+        raise ErroDeColecao("Cena inválida.")
+
+    def pct(valor, padrao):
+        return max(0, min(100, int(valor))) if isinstance(valor, (int, float)) and not isinstance(valor, bool) \
+            else padrao
+
+    musica = dados.get("musica")
+    playlist = musica.get("playlist") if isinstance(musica, dict) else None
+    ambientes = []
+    for a in (dados.get("ambientes") or [])[:12]:
+        if isinstance(a, dict) and isinstance(a.get("som"), str) and a["som"].strip():
+            ambientes.append({"som": a["som"].strip()[:MAX_NOME], "volume": pct(a.get("volume"), 100)})
+    pads = [p.strip()[:MAX_NOME] for p in (dados.get("pads") or [])[:24] if isinstance(p, str) and p.strip()]
+    return {
+        "musica": {"playlist": playlist.strip()[:MAX_NOME]} if isinstance(playlist, str) and playlist.strip() else None,
+        "ambientes": ambientes,
+        "pads": pads,
+        "ducking": pct(dados.get("ducking"), PROFUNDIDADE_DUCKING_PADRAO),
+        "master": pct(dados.get("master"), 100),
+    }

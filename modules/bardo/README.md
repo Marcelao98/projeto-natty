@@ -101,6 +101,34 @@ espaço pra ambiente e efeitos tocarem junto (ver "Som de mesa").
 e principalmente a reconexão com o Echo ligado (`NAT20, por favor` com música
 tocando).
 
+## Som de mesa: ambientes, efeitos e cenas (desde 12/10/2026)
+
+Sons do próprio servidor, enviados pela mesa, tocando **junto** da música
+pelo mixer.
+
+| Comando | O que faz |
+|---|---|
+| `/som enviar arquivo nome tipo [tags]` | guarda um som: **ambiente** (loop), **efeito** (disparo, "pad") ou **musica** (vai pra fila) |
+| `/som tocar nome` | liga o ambiente (fade-in de 2 s), dispara o efeito ou enfileira a música |
+| `/som parar [nome]` | desliga um ambiente (fade-out), ou todos |
+| `/som volume nome nivel` | volume guardado do som; ambiente ligado muda na hora |
+| `/som geral nivel` | volume geral da Natty (master) |
+| `/som ducking nivel` | quanto a música abaixa quando um efeito toca (padrão 60%) |
+| `/som lista` · `/som apagar nome` | lista; apaga (quem enviou ou o cargo de mestre) |
+| `/som cena-salvar nome` · `/som cena nome` · `/som cenas` | cena = ambientes ligados + volumes + master + ducking (+ playlist, pelo painel) |
+
+- **Arquivo**: `data/som/<servidor>/<sha256>.<ext>` (`BARDO_PASTA_SOM`, fora do
+  git). Nome por hash: o nome do arquivo enviado nunca vira caminho, e o
+  mesmo áudio não entra duas vezes. Lista branca de extensão (mp3, ogg, opus,
+  wav, flac, m4a, webm) e limite de 20 MB.
+- **Efeito** é decodificado uma vez pra memória (numpy, cache dos 32 mais
+  usados): o disparo não espera ffmpeg. Efeito nasce com **duck** (abaixa a
+  música enquanto toca); ambiente nasce em loop, sem duck.
+- **Ambiente** é um loop de arquivo local (o ffmpeg reabre no fim). Pra
+  ambiente, arquivo é melhor que YouTube: a URL do YouTube expira no meio.
+- Ambiente e efeito tocam mesmo **sem música**, e pausar a música não pausa
+  o ambiente.
+
 ## Banco do Bardo: playlists, cenas e descobertas por servidor (desde 12/10/2026)
 
 O Bardo tem banco próprio, `data/bardo.db` (`BARDO_DB_PATH`), fora do git

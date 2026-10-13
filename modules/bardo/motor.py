@@ -14,6 +14,7 @@ que o painel acompanha ao vivo o que foi pedido pelo Discord ou pela voz.
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import time
 from types import SimpleNamespace
@@ -23,7 +24,7 @@ from discord.utils import escape_markdown
 
 from modules.bardo import service
 from modules.bardo.eventos import Publicador
-from modules.bardo.mixer import MUSICA, MixerSource
+from modules.bardo.mixer import MUSICA, MixerSource, decodificar_arquivo
 
 log = logging.getLogger(__name__)
 
@@ -87,6 +88,10 @@ class MotorBardo:
         self._saidas: dict[int, asyncio.Task] = {}
         self.eventos = Publicador()
         self._mixers: dict[int, MixerSource] = {}  # guild.id → mixer (sobrevive à conexão)
+        self._masters: dict[int, int] = {}  # guild.id → volume geral (0-100)
+        self._duckings: dict[int, int] = {}  # guild.id → quanto a música abaixa com efeito "duck" (0-100)
+        # sha256 do efeito → amostras já decodificadas (o pad dispara sem esperar ffmpeg)
+        self._efeitos: collections.OrderedDict[str, object] = collections.OrderedDict()
         # guild.id → quando a música atual começou (epoch), pro painel mostrar o progresso.
         self._tocando_desde: dict[int, float] = {}
 
@@ -544,6 +549,158 @@ class MotorBardo:
         voice_client.play(mixer, after=lambda erro: erro and log.error("Bardo: player parou com erro",
                                                                        exc_info=erro))
 
+    # -- Som de mesa: ambientes, efeitos, master, cenas -------------------------------
+
+    MAX_EFEITOS_EM_MEMORIA = 32
+
+    async def _conectar_para_som(self, guild: discord.Guild, canal) -> object | None:
+        """A conexão onde o som vai tocar: a atual; senão conecta no `canal` (de quem pediu)."""
+        voice_client = guild.voice_client
+        if voice_client is not None and voice_client.is_connected():
+            return voice_client
+        if canal is None:
+            return None
+        return await self._conectar(guild, canal)
+
+    def _fabrica_do_som(self, guild_id: int, som: dict):
+        caminho = str(service.caminho_do_som(guild_id, som["arquivo"]))
+        return lambda: discord.FFmpegPCMAudio(caminho, **service.opcoes_ffmpeg(local=True))
+
+    async def _amostras_do_efeito(self, guild_id: int, som: dict):
+        amostras = self._efeitos.get(som["hash"])
+        if amostras is None:
+            caminho = str(service.caminho_do_som(guild_id, som["arquivo"]))
+            amostras = await asyncio.to_thread(decodificar_arquivo, caminho)
+            self._efeitos[som["hash"]] = amostras
+            while len(self._efeitos) > self.MAX_EFEITOS_EM_MEMORIA:
+                self._efeitos.popitem(last=False)
+        self._efeitos.move_to_end(som["hash"])
+        return amostras
+
+    async def _som_tocar(self, guild: discord.Guild, canal, nome: str) -> str:
+        """Ambiente: liga o loop (ou acerta o volume). Efeito: dispara. Música: vai pra fila."""
+        som = await asyncio.to_thread(service.buscar_som, guild.id, nome)
+        titulo = escape_markdown(som["nome"])
+        if som["tipo"] == "musica":
+            if canal is None and guild.voice_client is None:
+                return "Chama a Natty pra uma call primeiro (ou entra numa)."
+            destino = guild.voice_client.channel if guild.voice_client is not None else canal
+            return await self._enfileirar(guild, destino, None, [
+                service.Musica(som["nome"], service.link_do_som(guild.id, som))])
+        voice_client = await self._conectar_para_som(guild, canal)
+        if voice_client is None:
+            return "Chama a Natty pra uma call primeiro (ou entra numa)."
+        mixer = self._mixer(guild)
+        if som["tipo"] == "ambiente":
+            mixer.tocar_ambiente(som["nome_chave"], self._fabrica_do_som(guild.id, som), ganho=som["volume"] / 100,
+                                 duck=som["duck"])
+            resposta = f"🌫️ Ambiente **{titulo}** ligado ({som['volume']}%)."
+        else:
+            amostras = await self._amostras_do_efeito(guild.id, som)
+            mixer.disparar_efeito(amostras, ganho=som["volume"] / 100, duck=som["duck"])
+            resposta = f"💥 **{titulo}**"
+        self._garantir_player(guild, voice_client)
+        self._notificar(guild.id)
+        return resposta
+
+    async def _som_parar(self, guild: discord.Guild, nome: str | None = None) -> str:
+        """Desliga um ambiente (com fade) ou, sem nome, todos."""
+        mixer = self._mixer(guild)
+        if nome:
+            som = await asyncio.to_thread(service.buscar_som, guild.id, nome, "ambiente")
+            if som["nome_chave"] not in mixer.ambientes:
+                return f"O ambiente **{escape_markdown(som['nome'])}** não está ligado."
+            mixer.parar_ambiente(som["nome_chave"])
+            self._notificar(guild.id)
+            return f"Desliguei o ambiente **{escape_markdown(som['nome'])}**."
+        if not mixer.ambientes:
+            return "Nenhum ambiente ligado."
+        quantos = len(mixer.ambientes)
+        for chave in list(mixer.ambientes):
+            mixer.parar_ambiente(chave)
+        self._notificar(guild.id)
+        return f"Desliguei {quantos} ambiente{'s' if quantos > 1 else ''}."
+
+    async def _som_volume(self, guild: discord.Guild, nome: str, nivel: int) -> str:
+        """Volume guardado do som (vale pras próximas vezes) e, se é ambiente ligado, já muda."""
+        som = await asyncio.to_thread(service.configurar_som, guild.id, nome, nivel)
+        mixer = self._mixer(guild)
+        if som["tipo"] == "ambiente" and som["nome_chave"] in mixer.ambientes:
+            mixer.tocar_ambiente(som["nome_chave"], self._fabrica_do_som(guild.id, som), ganho=som["volume"] / 100,
+                                 fade_s=0.3, duck=som["duck"])
+        self._notificar(guild.id)
+        return f"**{escape_markdown(som['nome'])}** em {som['volume']}%."
+
+    def _master(self, guild: discord.Guild) -> int:
+        return self._masters.get(guild.id, 100)
+
+    def _ducking(self, guild: discord.Guild) -> int:
+        return self._duckings.get(guild.id, service.PROFUNDIDADE_DUCKING_PADRAO)
+
+    def _mudar_master(self, guild: discord.Guild, nivel: int) -> str:
+        self._masters[guild.id] = max(0, min(100, int(nivel)))
+        self._mixer(guild).master(self._master(guild) / 100)
+        self._notificar(guild.id)
+        return f"Volume geral em {self._master(guild)}% 🔊"
+
+    def _mudar_ducking(self, guild: discord.Guild, nivel: int) -> str:
+        self._duckings[guild.id] = max(0, min(100, int(nivel)))
+        self._mixer(guild).ducking(self._ducking(guild) / 100)
+        self._notificar(guild.id)
+        return f"Com efeito tocando, a música abaixa {self._ducking(guild)}%."
+
+    def _capturar_cena(self, guild: discord.Guild, pads: list[str] | None = None) -> dict:
+        """O mixer agora, no formato de cena."""
+        return service.validar_cena({
+            "ambientes": [{"som": chave, "volume": round(a["volume"] * 100)}
+                          for chave, a in self._mixer(guild).ambientes.items()],
+            "pads": pads or [],
+            "ducking": self._ducking(guild),
+            "master": self._master(guild),
+        })
+
+    async def _cena_salvar(self, guild: discord.Guild, nome: str, autor_id: int | None,
+                           dados: dict | None = None) -> str:
+        dados = dados if dados is not None else self._capturar_cena(guild)
+        nome = await asyncio.to_thread(service.salvar_cena, guild.id, nome, dados, autor_id)
+        self._notificar(guild.id)
+        return f"🎬 Cena **{escape_markdown(nome)}** salva ({len(dados.get('ambientes', []))} ambientes)."
+
+    async def _cena_aplicar(self, guild: discord.Guild, canal, nome: str) -> str:
+        """Liga a cena: volume geral, ducking, ambientes (desliga os que não são dela) e a playlist, se tiver."""
+        nome, dados = await asyncio.to_thread(service.carregar_cena, guild.id, nome)
+        voice_client = await self._conectar_para_som(guild, canal)
+        if voice_client is None:
+            return "Chama a Natty pra uma call primeiro (ou entra numa)."
+        self._mudar_master(guild, dados["master"])
+        self._mudar_ducking(guild, dados["ducking"])
+        mixer = self._mixer(guild)
+        queridos = {service.slug(a["som"]): a for a in dados["ambientes"]}
+        for chave in list(mixer.ambientes):
+            if chave not in queridos:
+                mixer.parar_ambiente(chave)
+        faltando = []
+        for chave, ambiente in queridos.items():
+            try:
+                som = await asyncio.to_thread(service.buscar_som, guild.id, chave, "ambiente")
+            except service.ErroDeColecao:
+                faltando.append(ambiente["som"])
+                continue
+            mixer.tocar_ambiente(som["nome_chave"], self._fabrica_do_som(guild.id, som),
+                                 ganho=ambiente["volume"] / 100, duck=som["duck"])
+        partes = [f"🎬 Cena **{escape_markdown(nome)}**: {len(queridos) - len(faltando)} ambientes"]
+        if dados["musica"]:
+            try:
+                _, musicas = await asyncio.to_thread(service.carregar_playlist, guild.id, dados["musica"]["playlist"])
+                partes.append(await self._enfileirar(guild, voice_client.channel, None, musicas))
+            except service.ErroDeColecao:
+                faltando.append(f"playlist {dados['musica']['playlist']}")
+        if faltando:
+            partes.append("não achei: " + ", ".join(escape_markdown(f) for f in faltando))
+        self._garantir_player(guild, voice_client)
+        self._notificar(guild.id)
+        return " · ".join(partes)
+
     def _fila(self, guild: discord.Guild) -> service.Fila:
         return self._filas.setdefault(guild.id, service.Fila())
 
@@ -618,11 +775,19 @@ class ControleBardo:
             "repetir_fila": fila.repetir_fila,
             "volume": motor._volume(guild),
             "max_fila": service.MAX_FILA,
+            "mixer": {
+                "master": motor._master(guild),
+                "ducking": motor._ducking(guild),
+                "ambientes": [{"som": chave, "volume": round(a["volume"] * 100), "duck": a["duck"]}
+                              for chave, a in motor._mixer(guild).ambientes.items()],
+            },
         }
 
     # Comandos que o painel manda: nome → (precisa de quê, o que faz).
     COMANDOS = ("tocar", "pular", "pausar", "continuar", "parar", "volume", "repetir", "remover",
-                "limpar_fila", "tocar_playlist", "salvar_playlist", "playlists")
+                "limpar_fila", "tocar_playlist", "salvar_playlist", "playlists",
+                "sons", "som_tocar", "som_parar", "som_volume", "master", "ducking",
+                "cenas", "cena_aplicar", "cena_salvar", "cena_apagar")
 
     async def executar(self, guild, membro, comando: str, args: dict) -> dict:
         """Roda um comando do painel pelo MESMO caminho do Discord. {"ok", "texto", "dados"?}.
@@ -681,6 +846,41 @@ class ControleBardo:
                     bool(args.get("substituir")),
                 )
                 return {"ok": True, "texto": f"Salvei a playlist {nome} ({quantas} músicas)."}
+            if comando == "sons":
+                sons = await asyncio.to_thread(service.listar_sons, guild.id)
+                return {"ok": True, "texto": "", "dados": [
+                    {k: x[k] for k in ("nome", "nome_chave", "tipo", "volume", "duck", "tags")} for x in sons]}
+            if comando == "som_tocar":
+                return {"ok": True, "texto": _sem_negrito(await motor._som_tocar(
+                    guild, self._canal_de_voz(guild, membro), _texto(args.get("nome"), 100)))}
+            if comando == "som_parar":
+                return {"ok": True, "texto": _sem_negrito(await motor._som_parar(
+                    guild, _texto(args.get("nome"), 100) or None))}
+            if comando in ("som_volume", "master", "ducking"):
+                nivel = _inteiro(args.get("nivel"), 0, 100)
+                if nivel is None:
+                    return {"ok": False, "texto": "Vai de 0 a 100."}
+                if comando == "master":
+                    return {"ok": True, "texto": motor._mudar_master(guild, nivel)}
+                if comando == "ducking":
+                    return {"ok": True, "texto": motor._mudar_ducking(guild, nivel)}
+                return {"ok": True, "texto": _sem_negrito(
+                    await motor._som_volume(guild, _texto(args.get("nome"), 100), nivel))}
+            if comando == "cenas":
+                cenas = await asyncio.to_thread(service.listar_cenas, guild.id)
+                return {"ok": True, "texto": "", "dados": [{"nome": c["nome"]} for c in cenas]}
+            if comando == "cena_aplicar":
+                return {"ok": True, "texto": _sem_negrito(await motor._cena_aplicar(
+                    guild, self._canal_de_voz(guild, membro), _texto(args.get("nome"), 100)))}
+            if comando == "cena_salvar":
+                pads = args.get("pads") if isinstance(args.get("pads"), list) else None
+                dados = motor._capturar_cena(guild, pads)
+                return {"ok": True, "texto": _sem_negrito(await motor._cena_salvar(
+                    guild, _texto(args.get("nome"), 100), membro.id, dados))}
+            if comando == "cena_apagar":
+                apagou = await asyncio.to_thread(service.apagar_cena, guild.id, _texto(args.get("nome"), 100))
+                motor._notificar(guild.id)
+                return {"ok": apagou, "texto": "Cena apagada." if apagou else "Essa cena não existe."}
             # tocar_playlist
             canal = self._canal_de_voz(guild, membro)
             if canal is None:
@@ -688,7 +888,29 @@ class ControleBardo:
             nome, musicas = await asyncio.to_thread(service.carregar_playlist, guild.id, _texto(args.get("nome"), 100))
             return {"ok": True, "texto": f"Playlist {nome}: " + await motor._enfileirar(guild, canal, None, musicas)}
         except service.ErroDeColecao as e:
-            return {"ok": False, "texto": str(e).replace("**", "")}
+            return {"ok": False, "texto": _sem_negrito(str(e))}
+        except service.ArquivoNaoEncontrado:
+            return {"ok": False, "texto": "O arquivo desse som sumiu da pasta da Natty."}
+
+    async def enviar_som(self, guild, membro, nome: str, tipo: str, nome_do_arquivo: str, conteudo: bytes) -> dict:
+        """Upload pelo painel: mesmas regras do /som enviar (lista branca, tamanho, nome por hash)."""
+        if not self.pode_controlar(membro):
+            return {"ok": False, "texto": f"Enviar som pede o cargo {service.cargo_mestre()}."}
+        try:
+            som = await asyncio.to_thread(service.guardar_som, guild.id, nome, tipo, nome_do_arquivo, conteudo,
+                                          membro.id)
+        except service.ErroDeColecao as e:
+            return {"ok": False, "texto": _sem_negrito(str(e))}
+        self._motor._notificar(guild.id)
+        return {"ok": True, "texto": f"Guardei o {som['tipo']} {som['nome']}."}
+
+    async def arquivo_do_som(self, guild, membro, nome: str):
+        """Caminho do arquivo pra pré-escuta no painel (só quem é membro; o painel confere). None se não tem."""
+        try:
+            som = await asyncio.to_thread(service.buscar_som, guild.id, nome)
+            return service.caminho_do_som(guild.id, som["arquivo"])
+        except (service.ErroDeColecao, service.ArquivoNaoEncontrado):
+            return None
 
     def _canal_de_voz(self, guild, membro):
         """Onde tocar um pedido do painel: a call em que a Natty já está; senão a de quem pediu."""
@@ -708,7 +930,11 @@ class ControleBardo:
             resposta = await self._motor._tocar(guild, pedinte, None, link)
         else:
             resposta = await self._motor._tocar_busca(guild, pedinte, None, texto)
-        return resposta.replace("**", "")
+        return _sem_negrito(resposta)
+
+
+def _sem_negrito(texto: str) -> str:
+    return texto.replace("**", "")
 
 
 def _texto(valor, limite: int) -> str:

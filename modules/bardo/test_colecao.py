@@ -114,7 +114,8 @@ class Cenas(ComBancoTemporario):
     def test_salvar_atualizar_carregar_apagar(self):
         service.salvar_cena(GUILD, "Floresta", {"ambientes": [{"som": "chuva", "volume": 40}]})
         service.salvar_cena(GUILD, "floresta", {"ambientes": []})  # mesmo nome atualiza
-        self.assertEqual(service.carregar_cena(GUILD, "Floresta"), ("floresta", {"ambientes": []}))
+        nome, dados = service.carregar_cena(GUILD, "Floresta")
+        self.assertEqual((nome, dados["ambientes"], dados["ducking"]), ("floresta", [], 60))
         self.assertEqual(len(service.listar_cenas(GUILD)), 1)
         self.assertTrue(service.apagar_cena(GUILD, "Floresta"))
         with self.assertRaises(ErroDeColecao):

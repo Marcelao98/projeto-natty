@@ -1,5 +1,14 @@
 # Changelog
 
+## Bardo, etapa 7: ambientes, efeitos e cenas - 2026-10-12
+
+- `/som enviar|tocar|parar|volume|geral|ducking|lista|apagar|cena-salvar|cena|cenas`.
+- Sons em `data/som/<servidor>/<sha256>.<ext>` (fora do git), lista branca de extensão, limite de 20 MB, áudio repetido recusado; registro na tabela `sons` do `bardo.db`.
+- Ambiente = loop com fade; efeito = one-shot decodificado em memória (cache), com ducking da música; som tipo música vai pra fila (`som:<servidor>/<arquivo>`).
+- Volume geral (master) e profundidade do ducking por servidor; cenas salvam/aplicam ambientes, volumes, master, ducking e playlist.
+- Painel: comandos de som e cena, upload (`enviar_som`) e pré-escuta (`arquivo_do_som`) no `ControleBardo`.
+- Testes com ffmpeg real gerando os arquivos. **Falta ouvir o ducking ao vivo.**
+
 ## Bardo, etapa 6: mixer (música como camada) - 2026-10-12
 
 - `modules/bardo/mixer.py`: `MixerSource(discord.AudioSource)` em numpy — soma de camadas (música, ambiente, efeito) com thread leitora e ~1 s de buffer por stream, fila de comandos sem lock no caminho quente, rampas contra clique, ducking (ataque ~50 ms, soltura ~400 ms) e limiter suave.
