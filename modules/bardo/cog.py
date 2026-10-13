@@ -310,7 +310,17 @@ class BardoCog(MotorBardo, commands.Cog):
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, membro: discord.Member, antes: discord.VoiceState, depois: discord.VoiceState):
-        """Alguém entrou/saiu de um canal: se a call da Natty esvaziou, agenda a saída; se voltou gente, cancela."""
+        """Alguém entrou/saiu de um canal: se a call da Natty esvaziou, agenda a saída; se voltou gente, cancela.
+
+        A própria Natty (re)conectou — queda e volta, ou o Echo trocou a
+        conexão: o mixer volta a tocar na conexão nova, sem perder a música.
+        """
+        if membro.id == getattr(self.bot.user, "id", None) and depois.channel is not None:
+            mixer = self._mixers.get(membro.guild.id)
+            if mixer is not None and (mixer.musica or mixer.ambientes):
+                asyncio.get_running_loop().call_later(
+                    1.0, lambda: self._garantir_player(membro.guild, membro.guild.voice_client))
+            return
         if membro.bot:
             return
         guild = membro.guild

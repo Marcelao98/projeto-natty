@@ -36,26 +36,46 @@ class ConexaoDoEcho(ConexaoComum):
         self.stop_playing = mock.MagicMock()
 
 
+class FonteFalsa:
+    """FFmpegPCMAudio de mentira: `quadros` quadros de um tom constante e depois fim."""
+
+    def __init__(self, quadros=3, valor=1000):
+        self.restantes, self.valor = quadros, valor
+        self.limpa = False
+
+    def read(self):
+        if self.restantes <= 0:
+            return b""
+        self.restantes -= 1
+        return self.valor.to_bytes(2, "little", signed=True) * (960 * 2)
+
+    def cleanup(self):
+        self.limpa = True
+
+
+def com_musica(c, guild):
+    """Põe uma música no mixer do servidor (sem tocar de verdade)."""
+    c._mixer(guild).tocar_musica(FonteFalsa(quadros=10_000))
+
+
 class TestPararNaoSaiDaCall(unittest.TestCase):
+    """Parar e pular param só a CAMADA DE MÚSICA do mixer: o player segue (e a escuta do Echo, que divide a conexão)."""
+
     def setUp(self):
         self.c = cog.BardoCog(bot=SimpleNamespace(user=None))
 
     def parar(self, conexao):
         guild = SimpleNamespace(id=1, voice_client=conexao)
+        com_musica(self.c, guild)
         return asyncio.run(self.c._parar(guild))
 
-    def test_parar_nao_desconecta(self):
-        conexao = ConexaoComum()
-        self.assertEqual(self.parar(conexao), "Parei ⏹️")
-        conexao.stop.assert_called_once()
-        conexao.disconnect.assert_not_called()
-
-    def test_parar_com_o_echo_escutando_nao_derruba_a_escuta(self):
-        conexao = ConexaoDoEcho()
-        self.parar(conexao)
-        conexao.stop_playing.assert_called_once()
-        conexao.stop.assert_not_called()  # stop() mataria a escuta da senha
-        conexao.disconnect.assert_not_called()
+    def test_parar_nao_desconecta_nem_para_o_player(self):
+        for conexao in (ConexaoComum(), ConexaoDoEcho()):
+            with self.subTest(conexao=type(conexao).__name__):
+                self.assertEqual(self.parar(conexao), "Parei ⏹️")
+                conexao.stop.assert_not_called()  # no Echo, stop() mataria a escuta da senha
+                conexao.disconnect.assert_not_called()
+                self.assertIsNone(self.c._mixer(SimpleNamespace(id=1)).musica)
 
     def test_parar_limpa_a_fila(self):
         fila = self.c._fila(SimpleNamespace(id=1))
@@ -63,12 +83,27 @@ class TestPararNaoSaiDaCall(unittest.TestCase):
             self.parar(ConexaoComum())
         resetar.assert_called_once()
 
-    def test_pular_com_o_echo_escutando_nao_derruba_a_escuta(self):
+    def test_pular_para_so_a_musica(self):
         conexao = ConexaoDoEcho()
         guild = SimpleNamespace(id=1, voice_client=conexao)
-        self.c._pular(guild)
-        conexao.stop_playing.assert_called_once()
+        com_musica(self.c, guild)
+        self.assertIn("Pulei", self.c._pular(guild))
+        conexao.stop_playing.assert_not_called()
         conexao.stop.assert_not_called()
+        self.assertIsNone(self.c._mixer(guild).musica)
+
+    def test_sem_musica_nao_pula(self):
+        self.assertEqual(self.c._pular(SimpleNamespace(id=1, voice_client=ConexaoComum())), "Não tem nada tocando.")
+
+    def test_pausar_e_continuar_so_a_musica(self):
+        guild = SimpleNamespace(id=1, voice_client=ConexaoComum())
+        self.assertEqual(self.c._pausar(guild), "Não tem nada tocando.")
+        com_musica(self.c, guild)
+        self.assertEqual(self.c._pausar(guild), "Pausei ⏸️")
+        self.assertEqual(self.c._mixer(guild).musica, "pausada")
+        self.assertEqual(self.c._pausar(guild), "Não tem nada tocando.")
+        self.assertEqual(self.c._continuar(guild), "Continuando ▶️")
+        self.assertEqual(self.c._continuar(guild), "Não tem nada pausado.")
 
 
 class TestSoMencaoDeVerdade(unittest.TestCase):
@@ -158,6 +193,7 @@ class TestRepetir(unittest.TestCase):
         tocar.assert_called_once_with(self.guild, self.guild.voice_client, {"stream_url": "x"}, self.musica)
 
     def test_pular_desliga_o_repetir_e_avisa(self):
+        com_musica(self.c, self.guild)
         self.fila.repetir = True
         self.fila.adicionar(cog.service.Musica("Hope", "https://youtu.be/b"))
         resposta = self.c._pular(self.guild)
@@ -210,6 +246,7 @@ class TestRepetirFila(unittest.TestCase):
     def test_pular_nao_desliga_o_repetir_da_fila(self):
         self.fila.repetir_fila = True
         self.guild.voice_client = ConexaoComum()
+        com_musica(self.c, self.guild)
         self.c._pular(self.guild)
         self.assertTrue(self.fila.repetir_fila)
 
@@ -333,7 +370,7 @@ class TestSairDaCallVazia(unittest.TestCase):
 
     def test_listener_agenda_e_cancela(self):
         async def cenario():
-            membro = SimpleNamespace(bot=False, guild=self.guild)
+            membro = SimpleNamespace(id=5, bot=False, guild=self.guild)
             fora = SimpleNamespace(channel=None)
             dentro = SimpleNamespace(channel=self.canal)
             await self.c.on_voice_state_update(membro, dentro, fora)  # a última pessoa saiu
@@ -350,7 +387,7 @@ class TestSairDaCallVazia(unittest.TestCase):
 
     def test_listener_ignora_outro_canal(self):
         async def cenario():
-            membro = SimpleNamespace(bot=False, guild=self.guild)
+            membro = SimpleNamespace(id=5, bot=False, guild=self.guild)
             outro = SimpleNamespace(channel=SimpleNamespace(members=[]))
             await self.c.on_voice_state_update(membro, outro, SimpleNamespace(channel=None))
 
@@ -368,7 +405,6 @@ class TestControleDoPainel(unittest.TestCase):
         self.controle = self.bot.controles["bardo"]
         self.conexao = ConexaoComum()
         self.conexao.is_connected = lambda: True
-        self.conexao.is_paused = lambda: True
         self.conexao.channel = SimpleNamespace(name="Taverna")
         self.conexao.source = None
         self.guild = SimpleNamespace(id=1, voice_client=self.conexao)
@@ -377,6 +413,8 @@ class TestControleDoPainel(unittest.TestCase):
         fila = self.c._fila(self.guild)
         fila.tocando = cog.service.Musica("Garçom", "https://youtu.be/a", 90)
         fila.adicionar(cog.service.Musica("Hope", "https://youtu.be/b"))
+        com_musica(self.c, self.guild)
+        self.c._mixer(self.guild).pausar_musica(True)
         estado = self.controle.estado(self.guild)
         self.assertEqual(estado["tocando"], {"titulo": "Garçom", "link": "https://youtu.be/a", "duracao": 90})
         self.assertEqual([m["titulo"] for m in estado["proximas"]], ["Hope"])
@@ -455,6 +493,57 @@ class TestComandosDoPainel(TestControleDoPainel):
         pedinte = tocar.await_args.args[1]
         self.assertIs(pedinte.voice.channel, self.conexao.channel)
         self.assertIsNone(tocar.await_args.args[2])  # sem canal de texto
+
+
+class ConexaoQueToca(ConexaoComum):
+    """VoiceClient com play(): guarda a fonte e diz se está tocando."""
+
+    def __init__(self):
+        super().__init__(tocando=False)
+        self.source = None
+        self.play = mock.MagicMock(side_effect=self._play)
+        self.is_connected = lambda: True
+
+    def _play(self, fonte, after=None):
+        self.source, self.tocando = fonte, True
+
+
+class TestMixerNaConexao(unittest.TestCase):
+    def setUp(self):
+        self.c = cog.BardoCog(bot=SimpleNamespace(user=SimpleNamespace(id=1)))
+        self.conexao = ConexaoQueToca()
+        self.guild = SimpleNamespace(id=1, voice_client=self.conexao)
+
+    def test_toca_o_mixer_uma_vez_so(self):
+        self.c._garantir_player(self.guild, self.conexao)
+        self.c._garantir_player(self.guild, self.conexao)
+        self.conexao.play.assert_called_once()
+        self.assertIs(self.conexao.source, self.c._mixer(self.guild))
+
+    def test_conexao_nova_recebe_o_mesmo_mixer(self):
+        self.c._garantir_player(self.guild, self.conexao)
+        nova = ConexaoQueToca()  # caiu e voltou / o Echo trocou a conexão
+        self.c._garantir_player(self.guild, nova)
+        self.assertIs(nova.source, self.c._mixer(self.guild))
+
+    def test_outra_fonte_tocando_cede_pro_mixer_sem_derrubar_a_escuta(self):
+        conexao = ConexaoQueToca()
+        conexao.stop_playing = mock.MagicMock(side_effect=lambda: setattr(conexao, "tocando", False))
+        conexao.source, conexao.tocando = object(), True
+        self.c._garantir_player(self.guild, conexao)
+        conexao.stop_playing.assert_called_once()
+        conexao.stop.assert_not_called()
+        self.assertIs(conexao.source, self.c._mixer(self.guild))
+
+    def test_tocar_stream_poe_a_musica_no_mixer_com_o_volume(self):
+        self.c._volumes[1] = 30
+        with mock.patch.object(motor.discord, "FFmpegPCMAudio", return_value=FonteFalsa()):
+            self.c._tocar_stream(self.guild, self.conexao, {"stream_url": "x"}, cog.service.Musica("Garçom", "l"))
+        mixer = self.c._mixer(self.guild)
+        self.assertEqual(mixer.musica, "tocando")
+        self.assertIs(self.conexao.source, mixer)
+        mixer.read()  # aplica os comandos
+        self.assertAlmostEqual(mixer._ganho_bus["musica"], 0.3)
 
 
 if __name__ == "__main__":

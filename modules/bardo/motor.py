@@ -23,20 +23,11 @@ from discord.utils import escape_markdown
 
 from modules.bardo import service
 from modules.bardo.eventos import Publicador
+from modules.bardo.mixer import MUSICA, MixerSource
 
 log = logging.getLogger(__name__)
 
 MUSICAS_MOSTRADAS_NA_FILA = 10
-
-
-def _parar_audio(voice_client) -> None:
-    """
-    Para só a música. Com o Echo escutando, a conexão é um VoiceRecvClient, e
-    nele `stop()` para a música E a escuta — "natty pula"/"natty para"
-    deixavam a Natty surda pra senha. `stop_playing()` (só existe lá) para só
-    a música; numa conexão comum, `stop()` já é só a música. Sem importar o Echo.
-    """
-    getattr(voice_client, "stop_playing", voice_client.stop)()
 
 
 def _echo_escutando(voice_client) -> bool:
@@ -95,6 +86,7 @@ class MotorBardo:
         # guild.id → espera pra sair da call vazia (cancelada se alguém volta).
         self._saidas: dict[int, asyncio.Task] = {}
         self.eventos = Publicador()
+        self._mixers: dict[int, MixerSource] = {}  # guild.id → mixer (sobrevive à conexão)
         # guild.id → quando a música atual começou (epoch), pro painel mostrar o progresso.
         self._tocando_desde: dict[int, float] = {}
 
@@ -287,19 +279,14 @@ class MotorBardo:
         musica: service.Musica,
         tentativa: int = 0,
     ) -> None:
-        fonte = discord.PCMVolumeTransformer(
-            discord.FFmpegPCMAudio(
-                info["stream_url"], **service.opcoes_ffmpeg(info.get("http_headers"), local=info.get("local", False))
-            ),
-            volume=self._volume(guild) / 100,
+        fonte = discord.FFmpegPCMAudio(
+            info["stream_url"], **service.opcoes_ffmpeg(info.get("http_headers"), local=info.get("local", False))
         )
         inicio = time.monotonic()
         self._interrompidas.discard(guild.id)
 
-        def ao_terminar(erro: Exception | None) -> None:
-            # Roda na thread do player do discord.py, não no event loop.
-            if erro:
-                log.error("Bardo: erro tocando música", exc_info=erro)
+        def ao_terminar() -> None:
+            # Roda na thread do player do discord.py (o mixer avisa de lá), não no event loop.
             interrompida = guild.id in self._interrompidas
             self._interrompidas.discard(guild.id)
             falhou = not interrompida and time.monotonic() - inicio < service.SEGUNDOS_PARA_FALHA_RAPIDA
@@ -307,7 +294,10 @@ class MotorBardo:
                 self._depois_de_tocar(guild, musica, tentativa, falhou, interrompida), self.bot.loop
             )
 
-        voice_client.play(fonte, after=ao_terminar)
+        mixer = self._mixer(guild)
+        mixer.volume(MUSICA, self._volume(guild) / 100)
+        mixer.tocar_musica(fonte, ao_terminar=ao_terminar)
+        self._garantir_player(guild, voice_client)
         self._tocando_desde[guild.id] = time.time()
         self._notificar(guild.id)
 
@@ -406,8 +396,7 @@ class MotorBardo:
             log.exception("Bardo: não consegui avisar no canal de texto")
 
     def _pular(self, guild: discord.Guild) -> str:
-        voice_client = guild.voice_client
-        if voice_client is None or not (voice_client.is_playing() or voice_client.is_paused()):
+        if self._mixer(guild).musica is None:
             return "Não tem nada tocando."
         fila = self._fila(guild)
         tem_proxima = bool(fila.proximas)
@@ -416,7 +405,7 @@ class MotorBardo:
         repetia = fila.repetir
         fila.repetir = False
         self._interrompidas.add(guild.id)
-        _parar_audio(voice_client)  # o `after` do player chama _tocar_proxima
+        self._mixer(guild).parar_musica()  # o fim da camada de música chama _tocar_proxima
         aviso = " (repetição desligada)" if repetia else ""
         self._notificar(guild.id)
         return f"Pulei ⏭️{aviso}" if tem_proxima else f"Pulei ⏭️ A fila acabou.{aviso}"
@@ -483,34 +472,33 @@ class MotorBardo:
         return f"Limpei a fila ({quantas} música{'s' if quantas > 1 else ''}) 🧹"
 
     def _pausar(self, guild: discord.Guild) -> str:
-        voice_client = guild.voice_client
-        if voice_client is None or not voice_client.is_playing():
+        if self._mixer(guild).musica != "tocando":
             return "Não tem nada tocando."
-        voice_client.pause()
+        # Pausa só a música: ambiente e efeitos (etapa do mixer) continuam.
+        self._mixer(guild).pausar_musica(True)
         self._notificar(guild.id)
         return "Pausei ⏸️"
 
     def _continuar(self, guild: discord.Guild) -> str:
-        voice_client = guild.voice_client
-        if voice_client is None or not voice_client.is_paused():
+        if self._mixer(guild).musica != "pausada":
             return "Não tem nada pausado."
-        voice_client.resume()
+        self._mixer(guild).pausar_musica(False)
         self._notificar(guild.id)
         return "Continuando ▶️"
 
     async def _parar(self, guild: discord.Guild) -> str:
-        # Reseta antes do stop(): o `after` do player vai procurar a próxima
-        # e tem que achar a fila vazia.
+        # Reseta antes de parar: o fim da música vai procurar a próxima e tem
+        # que achar a fila vazia.
         self._fila(guild).resetar()
-        voice_client = guild.voice_client
-        if voice_client is None:
+        if guild.voice_client is None:
             return "Não estou tocando nada."
-        if voice_client.is_playing() or voice_client.is_paused():
+        mixer = self._mixer(guild)
+        if mixer.musica is not None:
             self._interrompidas.add(guild.id)
-        # Só para a música, não sai da call: quem tira a Natty da call agora é
-        # só o Echo ("NAT20, por favor, saia" / "@Natty, tampe os ouvidos").
-        # Assim "NAT20, por favor, pare" não derruba a escuta.
-        _parar_audio(voice_client)
+        # Só a camada de música: o player (e a escuta do Echo, que divide a
+        # conexão) seguem de pé, e não sai da call — quem tira a Natty da call
+        # é o Echo ("NAT20, por favor, saia") ou a call esvaziar.
+        mixer.parar_musica()
         self._notificar(guild.id)
         return "Parei ⏹️"
 
@@ -521,9 +509,7 @@ class MotorBardo:
 
         novo = service.novo_volume(atual, pedido)
         self._volumes[guild.id] = novo
-        voice_client = guild.voice_client
-        if voice_client is not None and isinstance(voice_client.source, discord.PCMVolumeTransformer):
-            voice_client.source.volume = novo / 100
+        self._mixer(guild).volume(MUSICA, novo / 100)
         self._notificar(guild.id)
         return f"Volume em {novo}% 🔊"
 
@@ -533,6 +519,30 @@ class MotorBardo:
     def _notificar(self, guild_id: int) -> None:
         """Avisa quem acompanha o estado do Bardo (o painel) que algo mudou."""
         self.eventos.publicar(guild_id)
+
+    def _mixer(self, guild: discord.Guild) -> MixerSource:
+        """O mixer do servidor. Vive aqui, não na conexão: sobrevive a reconexão e troca de cliente (Echo)."""
+        return self._mixers.setdefault(guild.id, MixerSource())
+
+    def _garantir_player(self, guild: discord.Guild, voice_client, tentativas: int = 20) -> None:
+        """Põe o mixer pra tocar na conexão, se ela não está tocando ele (parou ocioso, conexão nova...)."""
+        mixer = self._mixer(guild)
+        if voice_client is None or not voice_client.is_connected():
+            return
+        if mixer.ativo and voice_client.is_playing() and voice_client.source is mixer:
+            return
+        if voice_client.is_playing() or voice_client.is_paused():
+            if voice_client.source is mixer and not mixer.ativo and tentativas > 0:
+                # O player está terminando (o mixer acabou de dizer b""): tenta já já.
+                self.bot.loop.call_later(0.05, self._garantir_player, guild, voice_client, tentativas - 1)
+                return
+            if voice_client.source is not mixer:
+                getattr(voice_client, "stop_playing", voice_client.stop)()  # outra fonte: o mixer manda
+            else:
+                return
+        mixer.ativo = True
+        voice_client.play(mixer, after=lambda erro: erro and log.error("Bardo: player parou com erro",
+                                                                       exc_info=erro))
 
     def _fila(self, guild: discord.Guild) -> service.Fila:
         return self._filas.setdefault(guild.id, service.Fila())
@@ -557,6 +567,7 @@ class MotorBardo:
         # Como o "para": fila zerada antes, pro `after` do player não tocar a próxima.
         self._fila(guild).resetar()
         self._interrompidas.add(guild.id)
+        self._mixer(guild).parar_tudo()
         await voice_client.disconnect()
         self._notificar(guild.id)
         log.info("Bardo: saí da call vazia em %s", guild.id)
@@ -600,7 +611,7 @@ class ControleBardo:
             "conectado": conectado,
             "canal": getattr(getattr(voice_client, "channel", None), "name", None) if conectado else None,
             "tocando": _musica_para_o_painel(fila.tocando),
-            "pausado": bool(conectado and voice_client.is_paused()),
+            "pausado": motor._mixer(guild).musica == "pausada",
             "desde": motor._tocando_desde.get(guild.id) if fila.tocando else None,
             "proximas": [_musica_para_o_painel(m) for m in fila.proximas],
             "repetir": fila.repetir,

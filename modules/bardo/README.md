@@ -72,6 +72,35 @@ aceita mensagens da própria Natty com esse marcador como se fossem menção.
   longo: a URL do YouTube expira.
 - Spotify não dá (DRM). Freesound precisaria de chave de API, fica de fora.
 
+## Mixer (desde 12/10/2026)
+
+O Discord toca **uma** fonte por conexão. Agora essa fonte é o
+`MixerSource` (`mixer.py`), e a música é uma camada dele — o que abre
+espaço pra ambiente e efeitos tocarem junto (ver "Som de mesa").
+
+- A cada 20 ms o player do discord.py chama `read()` na thread dele; o
+  mixer soma as camadas em float32 (numpy) e devolve 3840 bytes (48 kHz,
+  estéreo, int16). `voice_client.play(...)` continua o mesmo, então o
+  `VoiceRecvClient` do Echo por cima não muda.
+- Cada stream tem uma thread leitora com ~1 s de buffer: rede lenta vira
+  silêncio só naquela camada, não trava a mistura.
+- Comandos entram numa fila aplicada no começo de cada `read()` (sem lock no
+  caminho quente). Volume com rampa de 20 ms (sem clique), limiter suave no
+  master (nunca estoura).
+- **Pausar/pular/parar mexem só na camada de música**: o player continua
+  (e a escuta do Echo, que divide a conexão, nem é tocada — não depende mais
+  do `stop_playing()`).
+- O mixer **vive no motor**, por servidor, não na conexão: se a call cai e
+  volta, ou o Echo troca a conexão, ele é tocado de novo na conexão nova
+  (`_garantir_player`) e a música segue de onde estava.
+- Sem nada tocando por 5 s, o mixer devolve fim e o player para (não fica
+  mandando silêncio); o próximo pedido toca ele de novo.
+- `/volume` continua igual: agora é o ganho do bus de música.
+
+**Validar ao vivo (não dá na nuvem)**: som normal, pausa/pular/parar, volume,
+e principalmente a reconexão com o Echo ligado (`NAT20, por favor` com música
+tocando).
+
 ## Banco do Bardo: playlists, cenas e descobertas por servidor (desde 12/10/2026)
 
 O Bardo tem banco próprio, `data/bardo.db` (`BARDO_DB_PATH`), fora do git

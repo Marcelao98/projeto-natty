@@ -1,5 +1,14 @@
 # Changelog
 
+## Bardo, etapa 6: mixer (música como camada) - 2026-10-12
+
+- `modules/bardo/mixer.py`: `MixerSource(discord.AudioSource)` em numpy — soma de camadas (música, ambiente, efeito) com thread leitora e ~1 s de buffer por stream, fila de comandos sem lock no caminho quente, rampas contra clique, ducking (ataque ~50 ms, soltura ~400 ms) e limiter suave.
+- O motor toca a música pelo mixer: pausar/pular/parar mexem só na camada de música, sem parar o player nem a escuta do Echo. `/volume` vira o ganho do bus de música; sai o `PCMVolumeTransformer`.
+- O mixer vive no motor: reconexão (ou o Echo trocando a conexão) recebe o mesmo mixer e a música continua.
+- `numpy` explícito no `requirements.txt` (o `audioop` saiu do Python 3.13).
+- Testes com PCM sintético e ffmpeg real (soma, rampa, fim, pausa sem consumir, ducking, limiter, loop, stream lento não trava, tempo de mistura). Bug achado nos testes e corrigido: efeito que acabava nunca saía da mistura.
+- **Falta validar ao vivo**: áudio real na call e reconexão com o Echo.
+
 ## Bardo, etapa 5: o painel controla o player - 2026-10-12
 
 - `ControleBardo.executar`: tocar (link ou busca), pausar/continuar, pular, parar, volume, repetir (faixa/fila/desligar), remover, limpar a fila, tocar/salvar/listar playlists — pelo mesmo caminho do Discord, com argumentos validados e o cargo de mestre conferido.

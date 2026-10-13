@@ -2,6 +2,9 @@ discord.py>=2.4.0
 PyNaCl>=1.5.0
 davey>=0.1.6
 yt-dlp>=2024.12.13
+# Mixer do Bardo (soma das camadas de áudio). Já vinha com o Whisper; aqui
+# explícito porque o Bardo usa direto (o audioop saiu do Python 3.13).
+numpy>=1.26
 gspread>=6.1.0
 google-auth>=2.30.0
 python-dotenv>=1.0.0
